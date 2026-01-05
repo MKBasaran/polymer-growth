@@ -1,3 +1,8 @@
+Genetic Algorithms To Better Understand Polymer
+Growth
+van den Broek, Thomas
+Supervisor: Cavill, Rachel
+
 This paper intends to find an approach to obtain the values
 of the parameters that govern polymer growth. In order to
 do this several variations of genetic algorithms have been
