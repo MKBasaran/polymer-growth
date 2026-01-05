@@ -94,7 +94,8 @@ class FDDCOptimizer:
         bounds: np.ndarray,
         objective_function: Callable,
         config: Optional[FDDCConfig] = None,
-        callback: Optional[Callable[[int, float], None]] = None
+        callback: Optional[Callable[[int, float], None]] = None,
+        console_callback: Optional[Callable[[str], None]] = None
     ):
         """
         Initialize FDDC optimizer.
@@ -104,12 +105,14 @@ class FDDCOptimizer:
             objective_function: Function that takes params array, returns cost
             config: FDDC configuration (uses defaults if None)
             callback: Optional callback(generation, best_cost) for progress updates
+            console_callback: Optional callback(message) for console output
         """
         self.bounds = bounds
         self.n_params = bounds.shape[0]
         self.objective = objective_function
         self.config = config if config is not None else FDDCConfig()
         self.callback = callback
+        self.console_callback = console_callback
 
         # Validate config
         if self.config.population_size % self.config.memory_size != 0:
@@ -123,6 +126,12 @@ class FDDCOptimizer:
         self.fitness_memory_pop2 = None
         self.rank_probabilities = None
         self.cost_history = []
+
+    def _log(self, message: str):
+        """Emit message to console callback and print to terminal."""
+        print(message)
+        if self.console_callback:
+            self.console_callback(message)
 
     def optimize(self, seed: int = 42) -> OptimizationResult:
         """
@@ -148,7 +157,7 @@ class FDDCOptimizer:
 
         # Main evolution loop
         for gen in range(self.config.max_generations):
-            print(f"\n=== Generation {gen + 1}/{self.config.max_generations} ===")
+            self._log(f"\n=== Generation {gen + 1}/{self.config.max_generations} ===")
 
             # Co-evolution encounters (except first generation)
             if gen > 0 and self.config.enable_coevolution:
@@ -167,7 +176,7 @@ class FDDCOptimizer:
             best_cost = self.objective(best_params)
 
             self.cost_history.append(best_cost)
-            print(f"Best cost: {best_cost:.6f}")
+            self._log(f"Best cost: {best_cost:.6f}")
 
             # Callback
             if self.callback:
@@ -246,7 +255,7 @@ class FDDCOptimizer:
 
     def _evaluate_initial_fitness(self):
         """Evaluate initial fitness for all individuals."""
-        print("Evaluating initial population...")
+        self._log("Evaluating initial population...")
 
         pop_size = self.config.population_size
         mem_size = self.config.memory_size
@@ -272,9 +281,13 @@ class FDDCOptimizer:
                 self.fitness_memory_pop1[i].append(-cost)  # Pop1 minimizes
                 self.fitness_memory_pop2[pop2_idx].append(cost)  # Pop2 maximizes
 
-            print(f"Progress: {i + 1}/{pop_size}", end='\r')
-
-        print()
+            # For console: update every 10% or at end
+            if (i + 1) % max(1, pop_size // 10) == 0 or (i + 1) == pop_size:
+                self._log(f"Progress: {i + 1}/{pop_size}")
+            else:
+                # For terminal: show all progress with carriage return
+                if not self.console_callback:
+                    print(f"Progress: {i + 1}/{pop_size}", end='\r')
 
     def _run_encounters(self):
         """Run random encounters between pop1 and pop2."""

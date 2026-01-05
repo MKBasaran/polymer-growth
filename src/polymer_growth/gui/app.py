@@ -45,6 +45,7 @@ class OptimizationWorker(QThread):
     """Worker thread for running FDDC optimization without blocking the UI."""
 
     progress = Signal(int, float)  # generation, cost
+    console_message = Signal(str)  # console output
     finished = Signal(object)  # OptimizationResult
     error = Signal(str)
 
@@ -100,12 +101,18 @@ class OptimizationWorker(QThread):
                 if not self._is_cancelled:
                     self.progress.emit(gen, cost)
 
+            # Console callback
+            def console_callback(message):
+                if not self._is_cancelled:
+                    self.console_message.emit(message)
+
             # Run optimization
             optimizer = FDDCOptimizer(
                 bounds=self.bounds,
                 objective_function=objective_wrapper,
                 config=self.config,
-                callback=progress_callback
+                callback=progress_callback,
+                console_callback=console_callback
             )
 
             result = optimizer.optimize(seed=self.seed)
@@ -366,6 +373,19 @@ class OptimizationTab(QWidget):
         progress_group.setLayout(progress_layout)
         layout.addWidget(progress_group)
 
+        # Console output
+        console_group = QGroupBox("Console Output")
+        console_layout = QVBoxLayout()
+
+        self.console_output = QTextEdit()
+        self.console_output.setReadOnly(True)
+        self.console_output.setMaximumHeight(150)
+        self.console_output.setFont(QFont("Courier", 9))  # Monospace font for console
+        console_layout.addWidget(self.console_output)
+
+        console_group.setLayout(console_layout)
+        layout.addWidget(console_group)
+
         # Control buttons
         btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("Start Optimization")
@@ -458,10 +478,12 @@ class OptimizationTab(QWidget):
         self.progress_bar.setValue(0)
         self.progress_label.setText("Starting optimization...")
         self.results_text.clear()
+        self.console_output.clear()
 
         # Start worker thread
         self.worker = OptimizationWorker(data_path, config, bounds, seed)
         self.worker.progress.connect(self.on_progress_update)
+        self.worker.console_message.connect(self.on_console_message)
         self.worker.finished.connect(self.on_optimization_finished)
         self.worker.error.connect(self.on_optimization_error)
         self.worker.start()
@@ -481,6 +503,15 @@ class OptimizationTab(QWidget):
         self.progress_bar.setValue(progress)
         self.progress_label.setText(
             f"Generation {generation}/{max_gen} - Best cost: {cost:.6f}"
+        )
+
+    @Slot(str)
+    def on_console_message(self, message: str):
+        """Append message to console output."""
+        self.console_output.append(message)
+        # Auto-scroll to bottom
+        self.console_output.verticalScrollBar().setValue(
+            self.console_output.verticalScrollBar().maximum()
         )
 
     @Slot(object)

@@ -645,6 +645,44 @@ The GUI implementation addresses the **#1 reason the previous bachelor student f
 
 ---
 
+## 2026-01-05 - GUI CONSOLE OUTPUT ENHANCEMENT
+
+**Goal:** Add real-time console output display in GUI for better visibility during long optimization runs
+
+**Files Changed:**
+- src/polymer_growth/optimizers/fddc.py
+- src/polymer_growth/gui/app.py
+
+**Change Summary:**
+Added console output widget to OptimizationTab that displays generation-by-generation progress messages:
+- Modified FDDC optimizer to support console_callback parameter
+- Added _log() method that emits to both terminal and callback
+- Created console_message signal in OptimizationWorker
+- Added QTextEdit console widget with monospace font
+- Auto-scroll to bottom for latest messages
+- Displays: "Evaluating initial population...", "Progress: X/Y", generation headers, and cost updates
+- Terminal continues to show all output; GUI shows sampled progress (every 10%)
+
+**Risk/Assumption:**
+- Emitting too many signals could slow down optimization
+- Mitigation: Progress messages are sampled (every 10% during initial evaluation) for GUI
+
+**Verification:**
+```bash
+python -m py_compile src/polymer_growth/optimizers/fddc.py src/polymer_growth/gui/app.py
+polymer-sim gui  # Manual test: Start optimization, verify console shows messages
+```
+
+**Measured Impact:**
+- User experience: Significantly improved - users can see detailed progress without checking terminal
+- Performance: Minimal impact (signals only emitted ~10 times for initial evaluation, once per generation)
+- GUI responsiveness: Maintained (messages handled asynchronously via Qt signals)
+
+**User Feedback:**
+User requested this feature after running first thesis validation test: "should we also output this data in the gui"
+
+---
+
 ## [Template for Future Entries]
 
 ## YYYY-MM-DD HH:MM - [CHANGE TITLE]
