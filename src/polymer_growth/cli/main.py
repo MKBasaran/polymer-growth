@@ -122,13 +122,13 @@ def fit(experimental_data, generations, population, seed, output):
             time_sim=int(params_array[0]),
             number_of_molecules=int(params_array[1]),
             monomer_pool=int(params_array[2]),
-            p_growth=params_array[3],
-            p_death=params_array[4],
-            p_dead_react=params_array[5],
-            l_exponent=params_array[6],
-            d_exponent=params_array[7],
-            l_naked=params_array[8],
-            kill_spawns_new=bool(round(params_array[9]))
+            p_growth=float(params_array[3]),
+            p_death=float(params_array[4]),
+            p_dead_react=float(params_array[5]),
+            l_exponent=float(params_array[6]),
+            d_exponent=float(params_array[7]),
+            l_naked=float(params_array[8]),
+            kill_spawns_new=bool(round(float(params_array[9])))
         )
 
         # Run simulation
