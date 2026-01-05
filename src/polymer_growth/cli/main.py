@@ -118,17 +118,19 @@ def fit(experimental_data, generations, population, seed, output):
     # Create wrapper for objective function that runs simulation
     def objective_wrapper(params_array):
         """Convert parameter array to SimulationParams and evaluate."""
+        # Convert numpy array elements to Python scalars using .item()
+        # This is more robust than float() for numpy arrays
         params = SimulationParams(
-            time_sim=int(params_array[0]),
-            number_of_molecules=int(params_array[1]),
-            monomer_pool=int(params_array[2]),
-            p_growth=float(params_array[3]),
-            p_death=float(params_array[4]),
-            p_dead_react=float(params_array[5]),
-            l_exponent=float(params_array[6]),
-            d_exponent=float(params_array[7]),
-            l_naked=float(params_array[8]),
-            kill_spawns_new=bool(round(float(params_array[9])))
+            time_sim=int(np.asarray(params_array[0]).item()),
+            number_of_molecules=int(np.asarray(params_array[1]).item()),
+            monomer_pool=int(np.asarray(params_array[2]).item()),
+            p_growth=float(np.asarray(params_array[3]).item()),
+            p_death=float(np.asarray(params_array[4]).item()),
+            p_dead_react=float(np.asarray(params_array[5]).item()),
+            l_exponent=float(np.asarray(params_array[6]).item()),
+            d_exponent=float(np.asarray(params_array[7]).item()),
+            l_naked=float(np.asarray(params_array[8]).item()),
+            kill_spawns_new=bool(round(float(np.asarray(params_array[9]).item())))
         )
 
         # Run simulation
