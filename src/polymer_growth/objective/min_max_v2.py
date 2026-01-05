@@ -83,12 +83,18 @@ class MinMaxV2ObjectiveFunction:
         # Cache experimental peak location
         self.exp_peak_idx = np.argmax(self.exp_norm)
 
-    def compute_cost(self, distribution: Distribution) -> float:
+    def compute_cost(
+        self,
+        distribution: Distribution,
+        sigma: Optional[np.ndarray] = None
+    ) -> float:
         """
         Compute cost for a simulated distribution.
 
         Args:
             distribution: Simulated polymer distribution
+            sigma: Optional sigma weights for partitions (array-like)
+                   If None, uses self.config.sigma
 
         Returns:
             Cost value (lower is better)
@@ -111,8 +117,11 @@ class MinMaxV2ObjectiveFunction:
         # Align peaks
         trans_sim_norm, shift_distance, peak_percentage = self._align_peaks(sim_norm)
 
-        # Compute cost
-        cost = self._compute_partition_cost(trans_sim_norm)
+        # Use provided sigma or fall back to config
+        active_sigma = sigma if sigma is not None else np.array(self.config.sigma)
+
+        # Compute cost with active sigma
+        cost = self._compute_partition_cost(trans_sim_norm, active_sigma)
 
         # Apply peak alignment penalty
         cost *= np.exp(peak_percentage / self.config.transfac)
@@ -158,7 +167,11 @@ class MinMaxV2ObjectiveFunction:
 
         return trans_sim, shift, peak_percentage
 
-    def _compute_partition_cost(self, trans_sim_norm: np.ndarray) -> float:
+    def _compute_partition_cost(
+        self,
+        trans_sim_norm: np.ndarray,
+        sigma: np.ndarray
+    ) -> float:
         """
         Compute weighted partition-based cost.
 
@@ -170,6 +183,7 @@ class MinMaxV2ObjectiveFunction:
 
         Args:
             trans_sim_norm: Shifted, normalized simulated distribution
+            sigma: Partition weights (array of weights)
 
         Returns:
             Total cost
@@ -186,8 +200,8 @@ class MinMaxV2ObjectiveFunction:
         # Extra indices: simulated has values where experimental doesn't
         extra_idx = [i for i in sim_nonzero_idx if i not in exp_nonzero_idx]
 
-        # Partition size
-        n_partitions = len(self.config.sigma)
+        # Partition size based on sigma length
+        n_partitions = len(sigma)
         partition_size = len(exp_nonzero_idx) // n_partitions
 
         total_cost = 0.0
@@ -210,7 +224,7 @@ class MinMaxV2ObjectiveFunction:
                     error_sum += error
 
             # Weight by sigma
-            partition_cost = error_sum * self.config.sigma[i]
+            partition_cost = error_sum * sigma[i]
             total_cost += partition_cost
 
         # Handle missed values (remainder after partitioning)
