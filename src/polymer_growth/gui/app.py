@@ -337,9 +337,17 @@ class OptimizationTab(QWidget):
         self.seed_input.setRange(0, 999999)
         self.seed_input.setValue(42)
 
+        self.fast_mode_checkbox = QCheckBox("Fast Test Mode (disables co-evolution)")
+        self.fast_mode_checkbox.setChecked(False)
+        self.fast_mode_checkbox.setToolTip(
+            "Disables co-evolution for faster testing (~10x speedup).\n"
+            "⚠️ Use only for testing - disable for real optimization!"
+        )
+
         config_layout.addRow("Population Size:", self.population_input)
         config_layout.addRow("Max Generations:", self.generations_input)
         config_layout.addRow("Random Seed:", self.seed_input)
+        config_layout.addRow("", self.fast_mode_checkbox)  # Empty label for checkbox
 
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
@@ -424,7 +432,8 @@ class OptimizationTab(QWidget):
         # Get configuration
         config = FDDCConfig(
             population_size=self.population_input.value(),
-            max_generations=self.generations_input.value()
+            max_generations=self.generations_input.value(),
+            enable_coevolution=not self.fast_mode_checkbox.isChecked()  # Disable if fast mode
         )
 
         # Default parameter bounds (from thesis)
