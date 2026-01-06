@@ -79,19 +79,21 @@ class OptimizationWorker(QThread):
                 if self._is_cancelled:
                     raise InterruptedError("Optimization cancelled")
 
-                # Convert numpy array elements to Python scalars using .item()
-                # This is more robust than float() for numpy arrays
+                # Convert entire array to Python list to ensure native types
+                # This is the most robust approach for co-evolution mode
+                params_list = [float(x) for x in params_array]
+
                 params = SimulationParams(
-                    time_sim=int(np.asarray(params_array[0]).item()),
-                    number_of_molecules=int(np.asarray(params_array[1]).item()),
-                    monomer_pool=int(np.asarray(params_array[2]).item()),
-                    p_growth=float(np.asarray(params_array[3]).item()),
-                    p_death=float(np.asarray(params_array[4]).item()),
-                    p_dead_react=float(np.asarray(params_array[5]).item()),
-                    l_exponent=float(np.asarray(params_array[6]).item()),
-                    d_exponent=float(np.asarray(params_array[7]).item()),
-                    l_naked=float(np.asarray(params_array[8]).item()),
-                    kill_spawns_new=bool(round(float(np.asarray(params_array[9]).item())))
+                    time_sim=int(params_list[0]),
+                    number_of_molecules=int(params_list[1]),
+                    monomer_pool=int(params_list[2]),
+                    p_growth=params_list[3],
+                    p_death=params_list[4],
+                    p_dead_react=params_list[5],
+                    l_exponent=params_list[6],
+                    d_exponent=params_list[7],
+                    l_naked=params_list[8],
+                    kill_spawns_new=bool(round(params_list[9]))
                 )
 
                 rng = np.random.default_rng()
