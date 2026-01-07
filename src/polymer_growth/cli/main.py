@@ -118,9 +118,9 @@ def fit(experimental_data, generations, population, seed, output):
     # Create wrapper for objective function that runs simulation
     def objective_wrapper(params_array):
         """Convert parameter array to SimulationParams and evaluate."""
-        # Convert entire array to Python list to ensure native types
-        # This is the most robust approach for co-evolution mode
-        params_list = [float(x) for x in params_array]
+        # Convert to numpy array then to Python list - bulletproof conversion
+        params_array = np.asarray(params_array).flatten()
+        params_list = params_array.tolist()  # Guaranteed Python native types
 
         params = SimulationParams(
             time_sim=int(params_list[0]),
