@@ -116,7 +116,7 @@ def fit(experimental_data, generations, population, seed, output):
     ])
 
     # Create wrapper for objective function that runs simulation
-    def objective_wrapper(params_array):
+    def objective_wrapper(params_array, sigma=None):
         """Convert parameter array to SimulationParams and evaluate."""
         # Convert to numpy array then to Python list - bulletproof conversion
         params_array = np.asarray(params_array).flatten()
@@ -139,8 +139,8 @@ def fit(experimental_data, generations, population, seed, output):
         rng = np.random.default_rng()  # Will be seeded properly in production
         dist = simulate(params, rng)
 
-        # Compute cost
-        return objective.compute_cost(dist)
+        # Compute cost with sigma weights from co-evolution
+        return objective.compute_cost(dist, sigma=sigma)
 
     # Setup optimizer
     config = FDDCConfig(

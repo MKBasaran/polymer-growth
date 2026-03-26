@@ -15,6 +15,7 @@ from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtGui import QFont
 
 from polymer_growth.core import simulate, SimulationParams, Distribution
+from polymer_growth.core.run_manager import RunManager, save_optimization_run
 from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
 from polymer_growth.gui.plotting import PlotWidget
@@ -313,6 +314,9 @@ class OptimizationTab(QWidget):
     def __init__(self):
         super().__init__()
         self.worker: Optional[OptimizationWorker] = None
+        self.run_manager = RunManager()  # For saving runs
+        self.current_config: Optional[FDDCConfig] = None
+        self.current_data_path: Optional[str] = None
         self.init_ui()
 
     def init_ui(self):
@@ -348,17 +352,9 @@ class OptimizationTab(QWidget):
         self.seed_input.setRange(0, 999999)
         self.seed_input.setValue(42)
 
-        self.fast_mode_checkbox = QCheckBox("Fast Test Mode (disables co-evolution)")
-        self.fast_mode_checkbox.setChecked(False)
-        self.fast_mode_checkbox.setToolTip(
-            "Disables co-evolution for faster testing (~10x speedup).\n"
-            "⚠️ Use only for testing - disable for real optimization!"
-        )
-
         config_layout.addRow("Population Size:", self.population_input)
         config_layout.addRow("Max Generations:", self.generations_input)
         config_layout.addRow("Random Seed:", self.seed_input)
-        config_layout.addRow("", self.fast_mode_checkbox)  # Empty label for checkbox
 
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
@@ -456,9 +452,12 @@ class OptimizationTab(QWidget):
         # Get configuration
         config = FDDCConfig(
             population_size=self.population_input.value(),
-            max_generations=self.generations_input.value(),
-            enable_coevolution=not self.fast_mode_checkbox.isChecked()  # Disable if fast mode
+            max_generations=self.generations_input.value()
         )
+
+        # Store for saving run later
+        self.current_config = config
+        self.current_data_path = data_path
 
         # Default parameter bounds (from thesis)
         bounds = np.array([
@@ -524,7 +523,19 @@ class OptimizationTab(QWidget):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setValue(100)
-        self.progress_label.setText("Optimization complete!")
+
+        # Save run to organized directory
+        run_dir = None
+        try:
+            # Get data file name for run naming
+            data_name = Path(self.current_data_path).stem if self.current_data_path else None
+            self.run_manager.start_run("optimization", data_name)
+            self.run_manager.save_optimization_config(self.current_config)
+            self.run_manager.save_optimization_results(result)
+            run_dir = self.run_manager.current_run_dir
+            self.progress_label.setText(f"Complete! Saved to: {run_dir.name}")
+        except Exception as e:
+            self.progress_label.setText(f"Complete! (save failed: {e})")
 
         # Display best parameters
         param_names = [
@@ -533,7 +544,12 @@ class OptimizationTab(QWidget):
             'l_exponent', 'd_exponent', 'l_naked', 'kill_spawns_new'
         ]
 
-        results = f"Best Cost: {result.best_cost:.6f}\n\n"
+        results = f"Best Cost: {result.best_cost:.6f}\n"
+        if hasattr(result, 'convergence_generation') and result.convergence_generation:
+            results += f"(achieved at generation {result.convergence_generation})\n\n"
+        else:
+            results += "\n"
+
         results += "Best Parameters:\n"
         for name, value in zip(param_names, result.best_params):
             if name in ['time_sim', 'number_of_molecules', 'monomer_pool']:
@@ -543,7 +559,10 @@ class OptimizationTab(QWidget):
             else:
                 results += f"  {name}: {value:.6f}\n"
 
-        results += f"\nConvergence: {len(result.cost_history)} generations\n"
+        results += f"\nTotal generations run: {len(result.cost_history)}\n"
+
+        if run_dir:
+            results += f"\nRun saved to:\n  {run_dir}\n"
 
         self.results_text.setText(results)
 

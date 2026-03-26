@@ -57,8 +57,7 @@ def test_simple_optimization_toy_problem():
         max_generations=3,
         memory_size=2,
         n_encounters=2,
-        n_children=1,
-        enable_coevolution=False  # Disable for simplicity - just test basic GA
+        n_children=1
     )
 
     # Create optimizer

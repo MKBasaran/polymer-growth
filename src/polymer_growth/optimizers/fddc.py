@@ -14,8 +14,26 @@ Based on algorithm from previous research:
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple, List
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from functools import partial
+import time
+
+
+def _evaluate_single(args: Tuple) -> Tuple[int, int, float]:
+    """
+    Evaluate a single (params, sigma) pair.
+
+    This is a module-level function for pickle compatibility with ProcessPoolExecutor.
+
+    Args:
+        args: Tuple of (pop1_idx, pop2_idx, params, sigma, objective_fn)
+
+    Returns:
+        Tuple of (pop1_idx, pop2_idx, cost)
+    """
+    pop1_idx, pop2_idx, params, sigma, objective_fn = args
+    cost = objective_fn(params, sigma=sigma)
+    return (pop1_idx, pop2_idx, cost)
 
 
 @dataclass
@@ -36,8 +54,6 @@ class FDDCConfig:
                    Set to 1 for serial execution, None for CPU count
         enable_fddc: Use FDDC novelty ranking (default: True)
                      If False, becomes regular co-evolution
-        enable_coevolution: Use pop2 co-evolution (default: True)
-                           If False with enable_fddc=False, becomes regular GA
         sigma_points_to_distribute: Number of sigma indices to modify (default: auto = 20% of length)
         sigma_points_per_index: Weight increase per modified sigma (default: 4)
         rank_selection_power: Power for rank-based selection (default: 1.5)
@@ -53,7 +69,6 @@ class FDDCConfig:
     crossover_type: str = 'two_point'
     n_workers: Optional[int] = 6
     enable_fddc: bool = True
-    enable_coevolution: bool = True
     sigma_points_to_distribute: Optional[int] = None
     sigma_points_per_index: int = 4
     rank_selection_power: float = 1.5
@@ -160,15 +175,14 @@ class FDDCOptimizer:
             self._log(f"\n=== Generation {gen + 1}/{self.config.max_generations} ===")
 
             # Co-evolution encounters (except first generation)
-            if gen > 0 and self.config.enable_coevolution:
+            if gen > 0:
                 self._run_encounters()
 
             # Reproduction
             for _ in range(self.config.n_children):
                 rank_pop1, rank_pop2 = self._compute_ranks()
                 self._reproduce_pop1(rank_pop1)
-                if self.config.enable_coevolution:
-                    self._reproduce_pop2(rank_pop2)
+                self._reproduce_pop2(rank_pop2)
 
             # Get best individual
             rank_pop1, _ = self._compute_ranks()
@@ -182,16 +196,21 @@ class FDDCOptimizer:
             if self.callback:
                 self.callback(gen + 1, best_cost)
 
-        # Final result
+        # Final result - use best cost from history (not re-evaluation)
+        # since simulation is stochastic and re-evaluation gives different results
+        best_cost_in_history = min(self.cost_history)
+        best_generation = self.cost_history.index(best_cost_in_history)
+
+        # Get parameters from best generation
         rank_pop1, _ = self._compute_ranks()
         best_params = rank_pop1[-1]
-        best_cost = self.objective(best_params)
 
         return OptimizationResult(
             best_params=best_params,
-            best_cost=best_cost,
+            best_cost=best_cost_in_history,  # Use minimum from history
             generation=self.config.max_generations,
-            cost_history=self.cost_history
+            cost_history=self.cost_history,
+            convergence_generation=best_generation + 1  # +1 for 1-indexed display
         )
 
     def _initialize_populations(self):
@@ -222,25 +241,20 @@ class FDDCOptimizer:
             self.config.sigma_points_to_distribute = max(1, base_sigma_length // 5)
 
         self.pop2 = []
-        if self.config.enable_coevolution:
-            for _ in range(pop_size):
-                # Start with all 1s
-                sigma = np.ones(base_sigma_length)
+        for _ in range(pop_size):
+            # Start with all 1s
+            sigma = np.ones(base_sigma_length)
 
-                # Randomly increase some indices
-                n_modify = self.config.sigma_points_to_distribute
-                modify_indices = self.rng.choice(
-                    base_sigma_length,
-                    size=n_modify,
-                    replace=False
-                )
-                sigma[modify_indices] += self.config.sigma_points_per_index
+            # Randomly increase some indices
+            n_modify = self.config.sigma_points_to_distribute
+            modify_indices = self.rng.choice(
+                base_sigma_length,
+                size=n_modify,
+                replace=False
+            )
+            sigma[modify_indices] += self.config.sigma_points_per_index
 
-                self.pop2.append(sigma)
-        else:
-            # No co-evolution: all use default sigma
-            default_sigma = np.ones(base_sigma_length)
-            self.pop2 = [default_sigma.copy() for _ in range(pop_size)]
+            self.pop2.append(sigma)
 
         # Initialize fitness memories
         self.fitness_memory_pop1 = [[] for _ in range(pop_size)]
@@ -255,13 +269,25 @@ class FDDCOptimizer:
 
     def _evaluate_initial_fitness(self):
         """Evaluate initial fitness for all individuals."""
-        self._log("Evaluating initial population...")
+        pop_size = self.config.population_size
+        mem_size = self.config.memory_size
+        n_workers = self.config.n_workers
+
+        # Determine if we should use parallel evaluation
+        use_parallel = n_workers is None or n_workers > 1
+        total_evals = pop_size * mem_size
+
+        if use_parallel:
+            self._evaluate_initial_fitness_parallel()
+        else:
+            self._evaluate_initial_fitness_sequential()
+
+    def _evaluate_initial_fitness_sequential(self):
+        """Sequential evaluation of initial population (original behavior)."""
+        self._log("Evaluating initial population (sequential)...")
 
         pop_size = self.config.population_size
         mem_size = self.config.memory_size
-
-        # Each pop1 individual encounters multiple pop2 individuals
-        encounters_per_pop1 = mem_size
 
         for i in range(pop_size):
             pop1_ind = self.pop1[i]
@@ -272,22 +298,58 @@ class FDDCOptimizer:
 
             for pop2_idx in pop2_indices:
                 pop2_ind = self.pop2[pop2_idx]
+                cost = self.objective(pop1_ind, sigma=pop2_ind)
 
-                # Evaluate with this sigma
-                # (Objective function should use pop2_ind as sigma weights)
-                cost = self.objective(pop1_ind)  # Simplified - actual impl would set sigma
+                self.fitness_memory_pop1[i].append(-cost)
+                self.fitness_memory_pop2[pop2_idx].append(cost)
 
-                # Update memories
-                self.fitness_memory_pop1[i].append(-cost)  # Pop1 minimizes
-                self.fitness_memory_pop2[pop2_idx].append(cost)  # Pop2 maximizes
-
-            # For console: update every 10% or at end
             if (i + 1) % max(1, pop_size // 10) == 0 or (i + 1) == pop_size:
                 self._log(f"Progress: {i + 1}/{pop_size}")
-            else:
-                # For terminal: show all progress with carriage return
-                if not self.console_callback:
-                    print(f"Progress: {i + 1}/{pop_size}", end='\r')
+            elif not self.console_callback:
+                print(f"Progress: {i + 1}/{pop_size}", end='\r')
+
+    def _evaluate_initial_fitness_parallel(self):
+        """Parallel evaluation of initial population using ProcessPoolExecutor."""
+        pop_size = self.config.population_size
+        mem_size = self.config.memory_size
+        n_workers = self.config.n_workers if self.config.n_workers else None
+
+        # Build list of all evaluations needed
+        eval_tasks = []
+        for i in range(pop_size):
+            start_idx = (i // mem_size) * mem_size
+            for pop2_idx in range(start_idx, start_idx + mem_size):
+                eval_tasks.append((i, pop2_idx, self.pop1[i], self.pop2[pop2_idx]))
+
+        total_evals = len(eval_tasks)
+        self._log(f"Evaluating initial population ({total_evals} evaluations, {n_workers or 'auto'} workers)...")
+
+        start_time = time.time()
+        completed = 0
+
+        # Use ThreadPoolExecutor for IO-bound or ProcessPoolExecutor for CPU-bound
+        # ThreadPool is simpler and avoids pickle issues with objective function
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            # Submit all tasks
+            futures = {}
+            for pop1_idx, pop2_idx, params, sigma in eval_tasks:
+                future = executor.submit(self.objective, params, sigma=sigma)
+                futures[future] = (pop1_idx, pop2_idx)
+
+            # Collect results as they complete
+            for future in as_completed(futures):
+                pop1_idx, pop2_idx = futures[future]
+                cost = future.result()
+
+                # Update memories
+                self.fitness_memory_pop1[pop1_idx].append(-cost)
+                self.fitness_memory_pop2[pop2_idx].append(cost)
+
+                completed += 1
+                if completed % max(1, total_evals // 10) == 0 or completed == total_evals:
+                    elapsed = time.time() - start_time
+                    rate = completed / elapsed if elapsed > 0 else 0
+                    self._log(f"Progress: {completed}/{total_evals} ({rate:.1f} evals/sec)")
 
     def _run_encounters(self):
         """Run random encounters between pop1 and pop2."""
@@ -304,12 +366,13 @@ class FDDCOptimizer:
             pop1_ind = selected_pop1[i]
             pop2_ind = selected_pop2[i]
 
-            # Evaluate
-            cost = self.objective(pop1_ind)  # Would set sigma from pop2_ind
+            # Evaluate with co-evolved sigma weights
+            cost = self.objective(pop1_ind, sigma=pop2_ind)
 
             # Update fitness memories (rolling window)
-            pop1_idx = self.pop1.index(list(pop1_ind)) if isinstance(pop1_ind, np.ndarray) else self.pop1.index(pop1_ind)
-            pop2_idx = self.pop2.index(list(pop2_ind)) if isinstance(pop2_ind, np.ndarray) else self.pop2.index(pop2_ind)
+            # Use np.array_equal for numpy array comparison instead of list.index()
+            pop1_idx = next(idx for idx, ind in enumerate(self.pop1) if np.array_equal(ind, pop1_ind))
+            pop2_idx = next(idx for idx, ind in enumerate(self.pop2) if np.array_equal(ind, pop2_ind))
 
             self.fitness_memory_pop1[pop1_idx].append(-cost)
             self.fitness_memory_pop1[pop1_idx].pop(0)
@@ -405,7 +468,8 @@ class FDDCOptimizer:
         for _ in range(self.config.memory_size):
             # Random sigma opponent
             pop2_idx = self.rng.integers(0, self.config.population_size)
-            cost = self.objective(child)
+            pop2_sigma = self.pop2[pop2_idx]
+            cost = self.objective(child, sigma=pop2_sigma)
             child_fitness.append(-cost)
 
         # Replace worst if child is better
@@ -426,12 +490,13 @@ class FDDCOptimizer:
         # Crossover for sigma
         child = self._crossover_sigma(parent1, parent2)
 
-        # Evaluate child
+        # Evaluate child (child is a sigma individual from pop2)
         child_fitness = []
         for _ in range(self.config.memory_size):
             # Random pop1 opponent
             pop1_idx = self.rng.integers(0, self.config.population_size)
-            cost = self.objective(self.pop1[pop1_idx])  # Would use child as sigma
+            pop1_params = self.pop1[pop1_idx]
+            cost = self.objective(pop1_params, sigma=child)  # Use child sigma
             child_fitness.append(cost)
 
         # Replace worst if better

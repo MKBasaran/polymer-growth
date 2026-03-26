@@ -1,450 +1,240 @@
-# Polymer Growth Parameter Inference
+# Polymer Growth Simulation & Optimization
 
-**Scientific Software for Stochastic Polymer Growth Simulation & Parameter Optimization**
+A Python tool for simulating agent-based polymer chain growth and fitting simulation parameters to experimental data using genetic algorithms.
 
-> This repository contains polymer growth modeling code transitioning from thesis research code to production-quality open-source software.
+**Based on:** Thomas van den Broek (2020) - "Genetic Algorithms To Better Understand Polymer Growth"
 
----
+## Quick Start
 
-## 🚨 Current Status: LEGACY CODE → REFACTORING IN PROGRESS
+### Installation
 
-**What's Here:**
-- ✅ Working polymer growth simulation (agent-based, stochastic)
-- ✅ Multiple genetic algorithm optimizers (baseline GA, island model, co-evolution, FDDC)
-- ✅ Multiple cost functions for distribution comparison
-- ✅ Tkinter GUI for experiments
-- ✅ Thesis-validated algorithms (FDDC: 20 generation average to convergence)
-
-**What's Missing:**
-- ❌ No reproducibility controls (seed management)
-- ❌ No tests
-- ❌ No command-line interface
-- ❌ Poor performance (no JIT, inefficient loops)
-- ❌ Hardcoded paths and magic numbers everywhere
-- ❌ No documentation
-
-**🎯 Goal:** Transform into pip-installable package with CLI, docs, tests, and 10x better performance.
-
----
-
-## 📋 Documentation
-
-**Start here:**
-1. **[NEXT_STEPS.md](./NEXT_STEPS.md)** - What to do right now
-2. **[AUDIT_REPORT.md](./AUDIT_REPORT.md)** - Comprehensive codebase analysis (10,000+ words)
-3. **[CODEBASE_MAP.md](./CODEBASE_MAP.md)** - Quick reference guide to all files
-4. **[thesis.txt](./thesis.txt)** - Original thesis (source of truth for algorithms)
-
----
-
-## 🚀 Quick Start (Legacy Code)
-
-### Option 1: Run GUI
 ```bash
-cd "program code"
-python user_interface.py
+# Clone the repository
+git clone https://github.com/YOUR_USERNAME/polymer-growth.git
+cd polymer-growth
+
+# Create virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install with all dependencies (including GUI)
+pip install -e ".[gui,dev]"
 ```
 
-Then:
-1. Select algorithm (recommend: "fitness diversity driven coevolution")
-2. Choose cost function (recommend: "Min max V2")
-3. Select data file: `Data/5k no BB.xlsx`
-4. Set parameter bounds
-5. Click "Run"
+### Run the GUI (Recommended)
 
-### Option 2: Run Reproducibility Test
 ```bash
-python legacy_reproduce.py
+python -m polymer_growth.cli.main gui
 ```
 
-This runs the FDDC optimizer on synthetic data with controlled seed. Results saved to `results/YYYYMMDD_HHMMSS/`.
+This opens a graphical interface with two tabs:
+1. **Simulation Tab** - Run single simulations with custom parameters
+2. **Optimization Tab** - Fit parameters to experimental data using FDDC
 
----
+### Run via CLI
 
-## 🔬 Scientific Background
+```bash
+# Run a simulation
+python -m polymer_growth.cli.main simulate --time 1000 --molecules 10000 --seed 42
 
-### The Problem
-Polymers (repeating chain molecules) are used in medicine for controlled drug release. The drug release rate depends on polymer length. To synthesize polymers with the right length distribution, we need to know the probabilities of different chemical reactions during synthesis.
-
-### The Model
-We simulate polymer growth as a stochastic agent-based process:
-- Each chain is an agent with a length
-- At each timestep, chains can:
-  1. **Grow** (add one monomer unit) with probability `p_growth × monomer_ratio`
-  2. **Die** (stop growing) with probability `p_death × monomer_ratio`
-  3. **React vampirically** (dead chain couples with living chain) with probability depending on both chain lengths
-
-The simulation is governed by 10 parameters (see [thesis.txt](./thesis.txt) Table I for full descriptions).
-
-### The Challenge
-Given an experimental polymer length distribution, find the 10 parameter values that best reproduce it. This is a difficult optimization problem:
-- Stochastic simulation (noise in fitness function)
-- Multi-modal landscape (many local optima)
-- 10-dimensional search space
-
-### The Solution (from Thesis)
-Three genetic algorithm variants were tested:
-1. **Baseline GA** (various selection methods): 77 generations average
-2. **Island Model** (4 islands with migration): 41 generations average
-3. **Fitness-Diversity Driven Co-evolution (FDDC)**: **20 generations average** ✅ WINNER
-
-FDDC uses two populations:
-- Population 1: Candidate parameter solutions
-- Population 2: Sigma weights (emphasize different parts of distribution)
-
-The populations co-evolve, with novelty search preventing premature convergence.
-
----
-
-## 📂 Repository Structure
-
-```
-thesis_try/
-│
-├── AUDIT_REPORT.md           ⭐ Detailed analysis of legacy code
-├── NEXT_STEPS.md             ⭐ Immediate action plan
-├── CODEBASE_MAP.md           ⭐ File navigation guide
-├── thesis.txt                   Original thesis text
-├── legacy_reproduce.py          Reproducibility test script
-│
-├── program code/             📁 LEGACY CODE (as-is from thesis)
-│   ├── simulation.py            Core stochastic simulation (227 lines)
-│   ├── distributionComparison.py Cost functions (508 lines)
-│   ├── fddc.py                  FDDC optimizer (515 lines) ⭐ BEST
-│   ├── GA_base.py               Baseline GA (649 lines)
-│   ├── island_GA.py             Island model (318 lines)
-│   ├── co_evolution.py          Co-evolution (300 lines)
-│   ├── user_interface.py        Tkinter GUI (798 lines)
-│   ├── helper.py                Parameter validation
-│   ├── data_generator.py        Synthetic data creator
-│   ├── Data/                    Experimental polymer distributions
-│   └── fakeData/                Synthetic validation data
-│
-├── polymer_growth/           📁 NEW PACKAGE (to be created)
-│   ├── core/                    Refactored simulation engine
-│   ├── objective/               Cost functions
-│   ├── optimizers/              GA variants
-│   ├── io/                      Data loading/saving
-│   └── cli/                     Command-line interface
-│
-├── tests/                    📁 TEST SUITE (to be created)
-├── examples/                 📁 EXAMPLES (to be created)
-├── docs/                     📁 DOCUMENTATION (to be created)
-└── configs/                  📁 EXPERIMENT CONFIGS (to be created)
+# Fit to experimental data
+python -m polymer_growth.cli.main fit data/experimental.xlsx --generations 20 --seed 42
 ```
 
----
+## Features
 
-## 🧪 How It Works Today (Legacy)
+### Simulation
 
-### Example: Fit parameters to experimental data
+- Agent-based stochastic polymer growth model
+- 10 configurable parameters (see Table I in thesis)
+- Three reaction types: Growth, Death (termination), Vampiric coupling
+- Chemistry metrics: Mn, Mw, PDI (polydispersity index)
+- Per-timestep kinetics tracking and export
+
+### Optimization (FDDC)
+
+- **FDDC: Fitness-Diversity Driven Co-evolution** - Best performing algorithm from thesis
+- Two co-evolving populations: Solutions (parameters) vs Problems (sigma weights)
+- Memory-based fitness to handle stochastic simulation noise
+- Novelty-based ranking for population diversity
+- **Parallel evaluation** using multiple CPU cores (configurable workers)
+- Automatic run output organization in `runs/` directory
+
+### Comparison to Other Algorithms
+
+| Algorithm | Avg Generations | Performance |
+|-----------|-----------------|-------------|
+| Basic GA | ~77 | Baseline |
+| Island Model | ~41 | 1.9x faster |
+| **FDDC (used)** | ~20 | **3.9x faster** |
+
+## Project Structure
+
+```
+polymer-growth/
+├── src/polymer_growth/
+│   ├── core/                  # Simulation engine
+│   │   ├── simulation.py      # Main simulation with Mn/Mw/PDI
+│   │   └── run_manager.py     # Output organization
+│   ├── optimizers/
+│   │   └── fddc.py            # FDDC optimizer with parallel eval
+│   ├── objective/             # Cost functions (MinMaxV2)
+│   ├── cli/                   # Command-line interface
+│   └── gui/                   # PySide6 graphical interface
+├── tests/                     # Test suite (29 tests, all passing)
+├── data/                      # Experimental data files
+├── runs/                      # Auto-generated run outputs
+├── standalone_prototypes/     # Development prototypes
+└── docs/                      # Documentation
+```
+
+## Simulation Parameters
+
+| Parameter | Description | Typical Range |
+|-----------|-------------|---------------|
+| `time_sim` | Simulation timesteps | 100 - 10000 |
+| `number_of_molecules` | Initial polymer chains | 1000 - 100000 |
+| `monomer_pool` | Initial monomers (-1 = infinite) | 10000 - 100000000 |
+| `p_growth` | Growth probability per timestep | 0.1 - 0.99 |
+| `p_death` | Death (termination) probability | 0.00001 - 0.01 |
+| `p_dead_react` | Vampiric reaction probability | 0.1 - 0.99 |
+| `l_exponent` | Living chain length exponent | 0.1 - 0.99 |
+| `d_exponent` | Dead chain length exponent | 0.1 - 0.99 |
+| `l_naked` | Accessible surface ratio | 0.1 - 0.99 |
+| `kill_spawns_new` | Death spawns new chain? | True/False |
+
+## Chemistry Metrics
+
+The simulation computes standard polymer characterization metrics:
+
+- **Mn** (Number-average MW): Mean molecular weight
+- **Mw** (Weight-average MW): Weight-weighted mean (heavier chains count more)
+- **PDI** (Polydispersity Index): Mw/Mn (1.0 = monodisperse, >1 = broad distribution)
+
+Chemistry constants:
+- Monomer: 2-ethyl-2-oxazoline (99.13 g/mol)
+- Initiator: Methyl tosylate (180.0 g/mol)
+
+## Requirements
+
+- Python >= 3.9
+- NumPy, Pandas, Matplotlib, SciPy
+- Numba (JIT compilation for performance)
+- PySide6 (for GUI)
+- Click (for CLI)
+
+## Running Tests
+
+```bash
+# Run all tests with coverage
+pytest
+
+# Run specific test file
+pytest tests/test_simulation.py -v
+```
+
+All 29 tests passing.
+
+## Output Organization
+
+When you run optimizations, results are automatically saved to timestamped directories:
+
+```
+runs/
+├── optimization_dataset5K_20260305_143022/
+│   ├── config.json          # FDDC configuration used
+│   ├── optimization_results.json  # Best parameters, cost history
+│   └── cost_history.csv     # Per-generation cost
+└── simulation_test_20260305_143055/
+    ├── params.json          # Simulation parameters
+    ├── distribution.json    # Final chain distribution
+    └── kinetics.csv         # Per-timestep Mn/Mw/PDI (if tracked)
+```
+
+## Example Usage
+
+### Python API
 
 ```python
 import numpy as np
-from program_code.simulation import polymer
-from program_code.distributionComparison import min_maxV2
-from program_code.fddc import fddc
+from polymer_growth.core import simulate, SimulationParams
 
-# Define parameter bounds
-bounds = np.array([
-    [100, 3000],           # time_sim
-    [10000, 120000],       # number_of_molecules
-    [1000000, 5000000],    # monomer_pool
-    [0.1, 0.99],           # p_growth
-    [0.0001, 0.002],       # p_death
-    [0.1, 0.9],            # p_dead_react
-    [0.1, 0.9],            # l_exponent
-    [0.1, 0.9],            # d_exponent
-    [0.1, 1.0],            # l_naked
-    [0, 1]                 # kill_spawns_new
-])
-
-# Create cost function
-cost_func = min_maxV2("program code/Data/5k no BB.xlsx", polymer)
-
-# Create FDDC optimizer
-optimizer = fddc(
-    bounds=bounds,
-    fitnessFunction=cost_func.costFunction,
-    distribution_comparison=cost_func,
-    populationSize=50
+# Create parameters
+params = SimulationParams(
+    time_sim=1000,
+    number_of_molecules=10000,
+    monomer_pool=1000000,
+    p_growth=0.72,
+    p_death=0.000084,
+    p_dead_react=0.73,
+    l_exponent=0.41,
+    d_exponent=0.75,
+    l_naked=0.24,
+    kill_spawns_new=True
 )
 
-# Run optimization
-for generation in range(200):
-    optimizer.run()
-    print(f"Gen {generation}: Best cost = {optimizer.best_score}")
-    if optimizer.best_score < 10.0:
-        break
+# Run simulation
+rng = np.random.default_rng(42)
+dist = simulate(params, rng)
 
-print(f"Best parameters: {optimizer.best}")
+# Get results
+print(dist.stats())           # Chain counts, mean/max length
+print(dist.polymer_stats())   # Mn, Mw, PDI
+
+# With kinetics tracking
+result = simulate(params, rng, track_kinetics=True)
+result.kinetics.to_csv('kinetics.csv')
+result.kinetics.to_excel('kinetics.xlsx')
 ```
 
-**Issues with this workflow:**
-- No seed control (not reproducible)
-- Manual loop (no clean stopping condition)
-- Results not saved automatically
-- No progress tracking
-- Hardcoded paths
+### Optimization API
 
----
-
-## 🎯 Future Usage (After Refactor)
-
-### Command-line interface
-```bash
-# Simulate with fixed parameters
-polymer-sim simulate --config params.yml --seed 42 --out results/
-
-# Fit to experimental data
-polymer-sim fit \
-  --target data/5k_no_bb.csv \
-  --optimizer fddc \
-  --config configs/bounds_default.yml \
-  --seed 42 \
-  --out results/fit_5k/
-
-# Reproduce thesis result
-polymer-sim reproduce thesis-fddc-5k --out results/
-```
-
-### Python API
 ```python
-from polymer_growth.core import simulate
-from polymer_growth.objective import MinMaxV2Objective
-from polymer_growth.optimizers import FDDC
-from polymer_growth.io import load_target_distribution
+from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
+from polymer_growth.objective import MinMaxV2ObjectiveFunction
 
-# Load experimental data
-target = load_target_distribution("data/5k_no_bb.csv")
+# Load experimental data and create objective
+objective = MinMaxV2ObjectiveFunction(experimental_distribution)
 
-# Create objective function
-objective = MinMaxV2Objective(target_distribution=target)
-
-# Create optimizer
-optimizer = FDDC(
-    objective=objective,
-    bounds=bounds_dict,
+# Configure optimizer
+config = FDDCConfig(
     population_size=50,
-    seed=42
+    max_generations=20,
+    n_workers=6  # Parallel evaluation
 )
 
 # Run optimization
-result = optimizer.optimize(max_generations=200, threshold=10.0)
+optimizer = FDDCOptimizer(bounds, objective_wrapper, config=config)
+result = optimizer.optimize(seed=42)
 
-# Save results
-result.save("results/fit_5k/")
-result.plot_trajectory("results/fit_5k/trajectory.png")
+print(f"Best cost: {result.best_cost}")
+print(f"Best params: {result.best_params}")
 ```
 
----
+## CLI vs GUI Feature Comparison
 
-## 🔧 Development Roadmap
+| Feature | CLI | GUI |
+|---------|-----|-----|
+| Run simulation | Yes | Yes |
+| All 10 parameters | Fixed defaults | Adjustable |
+| FDDC optimization | Yes | Yes |
+| Progress display | Text | Progress bar + plot |
+| Parallel evaluation | Yes (auto) | Yes (6 workers) |
+| Run output saving | Manual | Automatic |
+| Kinetics tracking | Supported | Not exposed yet |
+| Mn/Mw/PDI display | In stats | Not shown yet |
 
-### Phase 0: Legacy Reproducibility (Week 1) ✅ IN PROGRESS
-- [x] Audit complete codebase
-- [x] Create reproducibility script
-- [ ] Document all workflows
-- [ ] Pin dependencies
+## License
 
-### Phase 1: Core Simulation (Week 2-3)
-- [ ] Extract pure simulation function
-- [ ] Add comprehensive tests
-- [ ] Add Numba JIT (target: 2-5x speedup)
-- [ ] RNG seeding control
+MIT License
 
-### Phase 2: Objective Functions (Week 4)
-- [ ] Standardize cost function interface
-- [ ] Support CSV/NumPy (not just Excel)
-- [ ] Separate plotting from computation
-- [ ] Tests for normalization correctness
+## References
 
-### Phase 3: Optimizers (Week 5-6)
-- [ ] Refactor FDDC (priority)
-- [ ] Refactor GA_base, island_GA
-- [ ] Remove all global state
-- [ ] Parallel execution with configurable workers
+- van den Broek, T. (2020). Genetic Algorithms To Better Understand Polymer Growth. Thesis.
+- Monnery, B.D., et al. (2018). Defined high molar mass poly(2-oxazoline)s. Angewandte Chemie.
 
-### Phase 4: CLI & Config (Week 7)
-- [ ] Click-based CLI
-- [ ] YAML configuration files
-- [ ] Structured logging
-- [ ] Subcommands: simulate, fit, reproduce, benchmark
+## Contact
 
-### Phase 5: Performance (Week 8)
-- [ ] Numba JIT critical loops (5x speedup)
-- [ ] Parallel population eval (2x speedup)
-- [ ] Caching & vectorization (2x speedup)
-- [ ] **Target: 10x total speedup**
+Kaan Basaran - Thesis Project 2026
 
-### Phase 6: Documentation & Release (Week 9-10)
-- [ ] Theory documentation (from thesis)
-- [ ] API reference (auto-generated)
-- [ ] Tutorials & examples
-- [ ] GitHub Actions CI
-- [ ] PyPI release: `pip install polymer-growth`
-- [ ] Zenodo DOI for citation
-- [ ] CITATION.cff file
-
----
-
-## 📊 Algorithm Performance (from Thesis)
-
-| Algorithm                | Mean Generations | Std Dev | Notes                    |
-|--------------------------|------------------|---------|--------------------------|
-| Baseline GA (Roulette)   | 77.3             | 32.5    | Population 100           |
-| Island Model (4 islands) | 41.3             | 17.6    | Circular migration, 7 gen|
-| **FDDC**                 | **20.1**         | **10.6**| **Best performer** ⭐    |
-
-*Experiments on synthetic data with known optimum, convergence threshold: cost < 10*
-
----
-
-## 🧮 Model Parameters
-
-From [thesis.txt](./thesis.txt) Table I:
-
-| Parameter               | Symbol | Range          | Description                                |
-|-------------------------|--------|----------------|--------------------------------------------|
-| simulation_time         | -      | [100, 3000]    | Number of timesteps                        |
-| number_of_molecules     | -      | [1e4, 1.2e5]   | Initial chain count                        |
-| monomer_pool            | -      | [1e6, 5e6]     | Available monomer units                    |
-| probability_of_growth   | pg     | [0.1, 0.99]    | Growth probability per timestep            |
-| probability_of_death    | pd     | [1e-4, 2e-3]   | Death (chain termination) probability      |
-| probability_dead_react  | pdr    | [0.1, 0.9]     | Vampiric coupling base probability         |
-| living_exponent         | le     | [0.1, 0.9]     | Living chain length exponent (coupling)    |
-| death_exponent          | de     | [0.1, 0.9]     | Dead chain length exponent (coupling)      |
-| living_naked            | ln     | [0.1, 1.0]     | Accessible surface ratio                   |
-| death_spawns_new_monomer| -      | {0, 1}         | Whether death events spawn new chains      |
-
-### Key Equations (from thesis)
-
-**Monomer ratio:**
-```
-monomer_ratio = current_monomer_pool / initial_monomer_pool
-```
-
-**Growth condition:**
-```
-if random() < pg × monomer_ratio:
-    chain_length += 1
-```
-
-**Death condition:**
-```
-if pg × monomer_ratio ≤ random() < (pg + pd) × monomer_ratio:
-    chain becomes dead
-```
-
-**Vampiric coupling success probability:**
-```
-p_success = pdr / (
-    l_living^min(l_living × le/ln, le) ×
-    l_dead^min(l_dead × de/ln, de)
-)
-```
-
----
-
-## 📦 Dependencies
-
-### Current (Legacy)
-```
-numpy>=1.21.0
-pandas>=1.3.0        # Excel loading
-matplotlib>=3.4.0
-scipy>=1.7.0
-scikit-learn>=0.24.0
-```
-
-### Future (Refactored)
-```
-# Core
-numpy>=1.21.0
-numba>=0.54.0        # JIT compilation
-
-# I/O & Config
-pandas>=1.3.0
-pyyaml>=5.4.0
-
-# CLI
-click>=8.0.0
-structlog>=21.0.0
-
-# Visualization
-matplotlib>=3.4.0
-
-# Development
-pytest>=6.2.0
-ruff>=0.1.0
-mypy>=0.910
-```
-
----
-
-## 📚 References
-
-1. **Original Simulation:** Van Appeven et al. (2018) - Understanding Polymer Growth
-2. **Selection Methods:** Saini (2017) - Review of Selection Methods in Genetic Algorithms
-3. **Island Model:** Herrera & Lozano (2000) - Gradual Distributed Genetic Algorithms
-4. **Co-evolution:** Paredis (1995) - Coevolutionary Computation
-5. **FDDC:** Franz et al. (2017) - On the Combination of Coevolution and Novelty Search
-6. **Experimental Data:** Monnery et al. (2018) - Defined High Molar Mass Poly(2-oxazoline)s
-
-Full bibliography in [thesis.txt](./thesis.txt).
-
----
-
-## 🤝 Contributing
-
-**Current Status:** Refactoring in progress. Not yet accepting external contributions.
-
-Once refactored (Phase 6):
-- Contribution guidelines in CONTRIBUTING.md
-- Code style: Black + Ruff
-- Type hints: mypy strict mode
-- Tests: pytest with 90%+ coverage
-- Documentation: MkDocs
-
----
-
-## 📄 License
-
-To be determined (likely MIT or Apache 2.0 for open source release).
-
----
-
-## 📧 Contact
-
-**Author:** Kaan Basaran (Thesis Project)
-**Institution:** [Your University]
-**Supervisor:** [Supervisor Name]
-
-**Issues:** (Will create GitHub Issues after Phase 6)
-
----
-
-## 🙏 Acknowledgments
-
-- Dr. Bryn D. Monnery for providing experimental data and domain expertise
-- Rachel Cavill for supervision and guidance
-- Original simulation developers (Van Appeven et al., 2018)
-
----
-
-## ⚠️ Current Limitations
-
-**Be aware when using legacy code:**
-1. **Not reproducible** - no seed control
-2. **Not tested** - no unit tests
-3. **Not fast** - Python loops, no JIT
-4. **Not documented** - beyond this README
-5. **Not pip-installable** - manual setup required
-6. **Hardcoded paths** - must run from specific directories
-
-**These will all be fixed in the refactored version.**
-
----
-
-*Last updated: 2026-01-05*
-*Status: Phase 0 in progress (audit complete)*
+*Last updated: 2026-03-05*
