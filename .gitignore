@@ -50,3 +50,19 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Personal/Planning (keep local, not for supervisors)
+WEEKLY_PLAN.md
+claudePivot.txt
+claude_command.txt
+docs/claudePivot.txt
+docs/claude_command.txt
+
+# Generated reports (can regenerate)
+THESIS_EVIDENCE_REPORT.pdf
+MEETING_REPORT.pdf
+docs/MEETING_REPORT.pdf
+docs/kinetics*.csv
+
+# Run outputs (auto-generated)
+runs/
