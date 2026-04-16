@@ -62,12 +62,22 @@ class RunManager:
         self.current_run_dir = self.base_dir / dir_name
         self.current_run_dir.mkdir(exist_ok=True)
 
-        # Create run info file
+        # Create run info file with system metadata
+        import platform
+        import sys as _sys
+
         info = {
             "timestamp": timestamp,
             "type": run_type,
             "name": name,
             "created": datetime.now().isoformat(),
+            "system": {
+                "platform": platform.system(),
+                "platform_version": platform.version(),
+                "python_version": _sys.version,
+                "cpu_count": os.cpu_count(),
+                "machine": platform.machine(),
+            },
         }
         self._save_json("run_info.json", info)
 

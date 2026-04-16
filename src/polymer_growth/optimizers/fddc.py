@@ -67,7 +67,7 @@ class FDDCConfig:
     mutation_rate: float = 0.6
     mutation_strength: float = 0.001
     crossover_type: str = 'two_point'
-    n_workers: Optional[int] = 6
+    n_workers: Optional[int] = None  # None = auto (cpu_count - 1)
     enable_fddc: bool = True
     sigma_points_to_distribute: Optional[int] = None
     sigma_points_per_index: int = 4
