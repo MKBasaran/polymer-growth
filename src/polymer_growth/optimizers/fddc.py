@@ -11,28 +11,54 @@ Based on algorithm from previous research:
     - Memory-based fitness to handle stochastic evaluations
 """
 
+import os
+
+# Prevent numpy/BLAS from spawning internal threads that compete with our
+# process-level parallelism. Must be set before numpy is imported.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMBA_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Tuple, List
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from functools import partial
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing as mp
+from multiprocessing.pool import Pool
 import time
 
+# Force fork start method for true parallelism (workers inherit globals)
+try:
+    mp.set_start_method('fork', force=True)
+except RuntimeError:
+    pass  # Already set
 
-def _evaluate_single(args: Tuple) -> Tuple[int, int, float]:
-    """
-    Evaluate a single (params, sigma) pair.
+# Detect if running inside a Qt application (fork after Qt init crashes on macOS)
+def _is_qt_running():
+    try:
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() is not None
+    except ImportError:
+        return False
 
-    This is a module-level function for pickle compatibility with ProcessPoolExecutor.
 
-    Args:
-        args: Tuple of (pop1_idx, pop2_idx, params, sigma, objective_fn)
+# Module-level objective function reference for multiprocessing workers.
+# Workers forked from the main process inherit this via fork().
+_worker_objective = None
 
-    Returns:
-        Tuple of (pop1_idx, pop2_idx, cost)
-    """
-    pop1_idx, pop2_idx, params, sigma, objective_fn = args
-    cost = objective_fn(params, sigma=sigma)
+
+def _worker_eval(args):
+    """Evaluate a single (params, sigma) pair in a worker process."""
+    params, sigma = args
+    return _worker_objective(params, sigma=sigma)
+
+
+def _worker_eval_indexed(args):
+    """Evaluate with index tracking for initial population."""
+    pop1_idx, pop2_idx, params, sigma = args
+    cost = _worker_objective(params, sigma=sigma)
     return (pop1_idx, pop2_idx, cost)
 
 
@@ -67,7 +93,7 @@ class FDDCConfig:
     mutation_rate: float = 0.6
     mutation_strength: float = 0.001
     crossover_type: str = 'two_point'
-    n_workers: Optional[int] = 6
+    n_workers: Optional[int] = None  # None = auto (cpu_count - 1)
     enable_fddc: bool = True
     sigma_points_to_distribute: Optional[int] = None
     sigma_points_per_index: int = 4
@@ -142,6 +168,15 @@ class FDDCOptimizer:
         self.rank_probabilities = None
         self.cost_history = []
 
+    def _parallel_map(self, func, tasks):
+        """Run tasks in parallel using whichever pool is available."""
+        if self._use_process_pool and self._pool:
+            return list(self._pool.map(func, tasks))
+        elif self._thread_pool:
+            return list(self._thread_pool.map(func, tasks))
+        else:
+            return [func(t) for t in tasks]
+
     def _log(self, message: str):
         """Emit message to console callback and print to terminal."""
         print(message)
@@ -160,6 +195,34 @@ class FDDCOptimizer:
         """
         # Initialize RNG
         self.rng = np.random.default_rng(seed)
+
+        # Pre-warm Numba JIT before forking so children inherit compiled code
+        try:
+            from polymer_growth.core.simulation import _compute_vampiric_success_prob
+            _dummy = np.array([1.0, 2.0])
+            _compute_vampiric_success_prob(_dummy, _dummy, 0.5, 0.5, 0.5, 0.5)
+        except Exception:
+            pass
+
+        # Create reusable pool for parallel evaluations
+        global _worker_objective
+        _worker_objective = self.objective
+
+        n_workers = self.config.n_workers if self.config.n_workers else None
+        self._use_parallel = n_workers is None or n_workers != 1
+
+        # Use ProcessPool for CLI (true parallelism, no GIL).
+        # Fall back to ThreadPool inside Qt GUI (fork after Qt crashes on macOS).
+        self._use_process_pool = self._use_parallel and not _is_qt_running()
+        if self._use_parallel:
+            if self._use_process_pool:
+                self._pool = Pool(processes=n_workers)
+            else:
+                self._pool = None
+                self._thread_pool = ThreadPoolExecutor(max_workers=n_workers)
+        else:
+            self._pool = None
+            self._thread_pool = None
 
         # Initialize populations
         self._initialize_populations()
@@ -196,12 +259,19 @@ class FDDCOptimizer:
             if self.callback:
                 self.callback(gen + 1, best_cost)
 
+        # Shutdown pools
+        if self._pool:
+            self._pool.terminate()
+            self._pool.join()
+            self._pool = None
+        if hasattr(self, '_thread_pool') and self._thread_pool:
+            self._thread_pool.shutdown(wait=False)
+            self._thread_pool = None
+
         # Final result - use best cost from history (not re-evaluation)
-        # since simulation is stochastic and re-evaluation gives different results
         best_cost_in_history = min(self.cost_history)
         best_generation = self.cost_history.index(best_cost_in_history)
 
-        # Get parameters from best generation
         rank_pop1, _ = self._compute_ranks()
         best_params = rank_pop1[-1]
 
@@ -327,32 +397,21 @@ class FDDCOptimizer:
         start_time = time.time()
         completed = 0
 
-        # Use ThreadPoolExecutor for IO-bound or ProcessPoolExecutor for CPU-bound
-        # ThreadPool is simpler and avoids pickle issues with objective function
-        with ThreadPoolExecutor(max_workers=n_workers) as executor:
-            # Submit all tasks
-            futures = {}
-            for pop1_idx, pop2_idx, params, sigma in eval_tasks:
-                future = executor.submit(self.objective, params, sigma=sigma)
-                futures[future] = (pop1_idx, pop2_idx)
+        # Submit all tasks via parallel map
+        results = self._parallel_map(_worker_eval_indexed, eval_tasks)
 
-            # Collect results as they complete
-            for future in as_completed(futures):
-                pop1_idx, pop2_idx = futures[future]
-                cost = future.result()
+        for pop1_idx, pop2_idx, cost in results:
+            self.fitness_memory_pop1[pop1_idx].append(-cost)
+            self.fitness_memory_pop2[pop2_idx].append(cost)
 
-                # Update memories
-                self.fitness_memory_pop1[pop1_idx].append(-cost)
-                self.fitness_memory_pop2[pop2_idx].append(cost)
-
-                completed += 1
-                if completed % max(1, total_evals // 10) == 0 or completed == total_evals:
-                    elapsed = time.time() - start_time
-                    rate = completed / elapsed if elapsed > 0 else 0
-                    self._log(f"Progress: {completed}/{total_evals} ({rate:.1f} evals/sec)")
+            completed += 1
+            if completed % max(1, total_evals // 10) == 0 or completed == total_evals:
+                elapsed = time.time() - start_time
+                rate = completed / elapsed if elapsed > 0 else 0
+                self._log(f"Progress: {completed}/{total_evals} ({rate:.1f} evals/sec)")
 
     def _run_encounters(self):
-        """Run random encounters between pop1 and pop2."""
+        """Run random encounters between pop1 and pop2 (parallelized)."""
         n_enc = self.config.n_encounters
 
         # Select random individuals from each population
@@ -361,24 +420,31 @@ class FDDCOptimizer:
         selected_pop1 = self._rank_select(rank_pop1, n_enc)
         selected_pop2 = self._rank_select(rank_pop2, n_enc)
 
-        # Run encounters
+        # Resolve indices before parallel execution
+        pop1_indices = []
+        pop2_indices = []
         for i in range(n_enc):
-            pop1_ind = selected_pop1[i]
-            pop2_ind = selected_pop2[i]
+            pop1_idx = next(idx for idx, ind in enumerate(self.pop1)
+                           if np.array_equal(ind, selected_pop1[i]))
+            pop2_idx = next(idx for idx, ind in enumerate(self.pop2)
+                           if np.array_equal(ind, selected_pop2[i]))
+            pop1_indices.append(pop1_idx)
+            pop2_indices.append(pop2_idx)
 
-            # Evaluate with co-evolved sigma weights
-            cost = self.objective(pop1_ind, sigma=pop2_ind)
+        # Parallel evaluation of all encounters
+        if self._use_parallel and n_enc > 1:
+            tasks = [(selected_pop1[i], selected_pop2[i]) for i in range(n_enc)]
+            costs = self._parallel_map(_worker_eval, tasks)
+        else:
+            costs = [self.objective(selected_pop1[i], sigma=selected_pop2[i])
+                     for i in range(n_enc)]
 
-            # Update fitness memories (rolling window)
-            # Use np.array_equal for numpy array comparison instead of list.index()
-            pop1_idx = next(idx for idx, ind in enumerate(self.pop1) if np.array_equal(ind, pop1_ind))
-            pop2_idx = next(idx for idx, ind in enumerate(self.pop2) if np.array_equal(ind, pop2_ind))
-
-            self.fitness_memory_pop1[pop1_idx].append(-cost)
-            self.fitness_memory_pop1[pop1_idx].pop(0)
-
-            self.fitness_memory_pop2[pop2_idx].append(cost)
-            self.fitness_memory_pop2[pop2_idx].pop(0)
+        # Update fitness memories with results
+        for i in range(n_enc):
+            self.fitness_memory_pop1[pop1_indices[i]].append(-costs[i])
+            self.fitness_memory_pop1[pop1_indices[i]].pop(0)
+            self.fitness_memory_pop2[pop2_indices[i]].append(costs[i])
+            self.fitness_memory_pop2[pop2_indices[i]].pop(0)
 
     def _compute_ranks(self) -> Tuple[List[np.ndarray], List[np.ndarray]]:
         """
@@ -452,52 +518,44 @@ class FDDCOptimizer:
         return selected
 
     def _reproduce_pop1(self, rank_pop1: List[np.ndarray]):
-        """Reproduce population 1 (parameter vectors)."""
-        # Select parents
+        """Reproduce population 1 (parameter vectors), parallelized child eval."""
         parents = self._rank_select(rank_pop1, 2)
-        parent1, parent2 = parents[0], parents[1]
+        child = self._mutate(self._crossover(parents[0], parents[1]))
 
-        # Crossover
-        child = self._crossover(parent1, parent2)
+        # Pick random sigma opponents
+        pop2_indices = self.rng.integers(0, self.config.population_size,
+                                         size=self.config.memory_size)
+        sigmas = [self.pop2[i] for i in pop2_indices]
 
-        # Mutate
-        child = self._mutate(child)
-
-        # Evaluate child
-        child_fitness = []
-        for _ in range(self.config.memory_size):
-            # Random sigma opponent
-            pop2_idx = self.rng.integers(0, self.config.population_size)
-            pop2_sigma = self.pop2[pop2_idx]
-            cost = self.objective(child, sigma=pop2_sigma)
-            child_fitness.append(-cost)
+        # Parallel evaluation of child against all sigmas
+        if self._use_parallel and self.config.memory_size > 1:
+            tasks = [(child, s) for s in sigmas]
+            child_fitness = [-c for c in self._parallel_map(_worker_eval, tasks)]
+        else:
+            child_fitness = [-self.objective(child, sigma=s) for s in sigmas]
 
         # Replace worst if child is better
         worst_idx = np.argmin([np.mean(mem) for mem in self.fitness_memory_pop1])
-        worst_fitness = np.mean(self.fitness_memory_pop1[worst_idx])
-        child_avg = np.mean(child_fitness)
-
-        if child_avg > worst_fitness:
+        if np.mean(child_fitness) > np.mean(self.fitness_memory_pop1[worst_idx]):
             self.pop1[worst_idx] = child
             self.fitness_memory_pop1[worst_idx] = child_fitness
 
     def _reproduce_pop2(self, rank_pop2: List[np.ndarray]):
-        """Reproduce population 2 (sigma weights)."""
-        # Select parents
+        """Reproduce population 2 (sigma weights), parallelized child eval."""
         parents = self._rank_select(rank_pop2, 2)
-        parent1, parent2 = parents[0], parents[1]
+        child = self._crossover_sigma(parents[0], parents[1])
 
-        # Crossover for sigma
-        child = self._crossover_sigma(parent1, parent2)
+        # Pick random pop1 opponents
+        pop1_indices = self.rng.integers(0, self.config.population_size,
+                                         size=self.config.memory_size)
+        opponents = [self.pop1[i] for i in pop1_indices]
 
-        # Evaluate child (child is a sigma individual from pop2)
-        child_fitness = []
-        for _ in range(self.config.memory_size):
-            # Random pop1 opponent
-            pop1_idx = self.rng.integers(0, self.config.population_size)
-            pop1_params = self.pop1[pop1_idx]
-            cost = self.objective(pop1_params, sigma=child)  # Use child sigma
-            child_fitness.append(cost)
+        # Parallel evaluation of child sigma against all opponents
+        if self._use_parallel and self.config.memory_size > 1:
+            tasks = [(opp, child) for opp in opponents]
+            child_fitness = self._parallel_map(_worker_eval, tasks)
+        else:
+            child_fitness = [self.objective(opp, sigma=child) for opp in opponents]
 
         # Replace worst if better
         worst_idx = np.argmin([np.mean(mem) for mem in self.fitness_memory_pop2])
