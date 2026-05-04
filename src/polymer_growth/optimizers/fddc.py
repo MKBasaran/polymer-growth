@@ -304,27 +304,30 @@ class FDDCOptimizer:
                 self._log(f"\n=== Generation {gen + 1}/{self.config.max_generations} ===")
 
                 if self._sim_hist_fn and self._cost_from_hist_fn:
+                    # FAST PATH: megabatch (batched, 1 pool.map per gen)
+                    # Note: ranks once, batches children -- slight deviation
+                    # from Thomas's interleaved approach. Documented trade-off.
                     self._generation_megabatch(gen)
                     best_cost = self._megabatch_best_cost
-                elif self.simulate_fn and self.cost_fn:
-                    if gen > 0:
-                        self._run_encounters()
-                    rank_pop1, rank_pop2 = self._compute_ranks()
-                    self._reproduce_batch(rank_pop1, rank_pop2)
-                    rank_pop1, _ = self._compute_ranks()
-                    best_params = rank_pop1[-1]
-                    eval_seed = int(self.rng.integers(0, 2**63))
-                    dist = self.simulate_fn(best_params, eval_seed)
-                    best_cost = self.cost_fn(dist, None)
                 else:
+                    # FAITHFUL PATH: matches Thomas's algorithm exactly.
+                    # Encounters, then interleaved pop1/pop2 with re-ranking.
                     if gen > 0:
                         self._run_encounters()
-                    rank_pop1, rank_pop2 = self._compute_ranks()
-                    self._reproduce_batch(rank_pop1, rank_pop2)
+
+                    for _ in range(self.config.n_children):
+                        rank_pop1, rank_pop2 = self._compute_ranks()
+                        self._reproduce_pop1_single(rank_pop1)
+                        self._reproduce_pop2_single(rank_pop2)
+
                     rank_pop1, _ = self._compute_ranks()
                     best_params = rank_pop1[-1]
                     eval_seed = int(self.rng.integers(0, 2**63))
-                    best_cost = self.objective(best_params, eval_seed=eval_seed)
+                    if self.simulate_fn and self.cost_fn:
+                        dist = self.simulate_fn(best_params, eval_seed)
+                        best_cost = self.cost_fn(dist, None)
+                    else:
+                        best_cost = self.objective(best_params, eval_seed=eval_seed)
 
                 self.cost_history.append(best_cost)
                 self._log(f"Best cost: {best_cost:.6f}")
@@ -749,6 +752,59 @@ class FDDCOptimizer:
                     break
         return selected
 
+    def _reproduce_pop1_single(self, rank_pop1: List[np.ndarray]):
+        """Reproduce one pop1 child. Matches Thomas's reproduce_pop1 exactly."""
+        parents = self._rank_select(rank_pop1, 2)
+        child = self._mutate(self._crossover(parents[0], parents[1]))
+
+        pop2_indices = self.rng.integers(0, self.config.population_size,
+                                         size=self.config.memory_size)
+        sigmas = [self.pop2[i] for i in pop2_indices]
+        eval_seed = int(self.rng.integers(0, 2**63))
+
+        if self.simulate_fn and self.cost_fn:
+            dist = self.simulate_fn(child, eval_seed)
+            child_fitness = [-self.cost_fn(dist, s) for s in sigmas]
+        else:
+            eval_seeds = [int(self.rng.integers(0, 2**63))
+                          for _ in range(len(sigmas))]
+            if self._use_parallel and self.config.memory_size > 1:
+                tasks = [(child, s, es) for s, es in zip(sigmas, eval_seeds)]
+                child_fitness = [-c for c in self._parallel_map(
+                    _worker_eval, tasks)]
+            else:
+                child_fitness = [
+                    -self.objective(child, sigma=s, eval_seed=es)
+                    for s, es in zip(sigmas, eval_seeds)]
+
+        worst_idx = np.argmin([np.mean(m) for m in self.fitness_memory_pop1])
+        if np.mean(child_fitness) > np.mean(self.fitness_memory_pop1[worst_idx]):
+            self.pop1[worst_idx] = child
+            self.fitness_memory_pop1[worst_idx] = child_fitness
+
+    def _reproduce_pop2_single(self, rank_pop2: List[np.ndarray]):
+        """Reproduce one pop2 child. Matches Thomas's reproduce_pop2 exactly."""
+        parents = self._rank_select(rank_pop2, 2)
+        child = self._crossover_sigma(parents[0], parents[1])
+
+        pop1_indices = self.rng.integers(0, self.config.population_size,
+                                         size=self.config.memory_size)
+        opponents = [self.pop1[i] for i in pop1_indices]
+
+        eval_seeds = [int(self.rng.integers(0, 2**63))
+                      for _ in range(len(opponents))]
+        if self._use_parallel and self.config.memory_size > 1:
+            tasks = [(opp, child, es) for opp, es in zip(opponents, eval_seeds)]
+            child_fitness = self._parallel_map(_worker_eval, tasks)
+        else:
+            child_fitness = [self.objective(opp, sigma=child, eval_seed=es)
+                             for opp, es in zip(opponents, eval_seeds)]
+
+        worst_idx = np.argmin([np.mean(m) for m in self.fitness_memory_pop2])
+        if np.mean(child_fitness) > np.mean(self.fitness_memory_pop2[worst_idx]):
+            self.pop2[worst_idx] = child
+            self.fitness_memory_pop2[worst_idx] = child_fitness
+
     def _reproduce_batch(self, rank_pop1: List[np.ndarray],
                          rank_pop2: List[np.ndarray]):
         """Batched reproduction: all children generated, then evaluated in parallel.
@@ -861,31 +917,47 @@ class FDDCOptimizer:
                 self.fitness_memory_pop2[worst_idx] = child_fitness
 
     def _crossover(self, parent1: np.ndarray, parent2: np.ndarray) -> np.ndarray:
-        """Two-point crossover for parameter vectors."""
-        child = parent1.copy()
+        """Two-point crossover for parameter vectors.
+
+        Matches Thomas's breed(): which parent contributes the inner vs outer
+        segments depends on the random ordering of crossover points.
+        """
         pt1 = self.rng.integers(0, len(parent1))
         pt2 = self.rng.integers(0, len(parent1))
 
-        if pt1 > pt2:
-            pt1, pt2 = pt2, pt1
-
-        child[pt1:pt2] = parent2[pt1:pt2]
+        child = np.empty_like(parent1)
+        if pt1 < pt2:
+            child[:pt1] = parent2[:pt1]
+            child[pt1:pt2] = parent1[pt1:pt2]
+            child[pt2:] = parent2[pt2:]
+        else:
+            child[:pt2] = parent1[:pt2]
+            child[pt2:pt1] = parent2[pt2:pt1]
+            child[pt1:] = parent1[pt1:]
         return child
 
     def _mutate(self, individual: np.ndarray) -> np.ndarray:
-        """Mutate parameter vector."""
+        """Mutate parameter vector.
+
+        Matches Thomas's mutation exactly:
+        - Skip last gene (binary kill_spawns_new, handled by crossover)
+        - Each gene: P(small_perturbation)=mutation_rate, P(uniform_resample)=1-mutation_rate
+        - Every gene is always mutated (no unchanged path)
+        """
         mutated = individual.copy()
 
-        for i in range(len(mutated)):
+        # Mutate all genes EXCEPT last (binary flag, handled separately)
+        for i in range(len(mutated) - 1):
             if self.rng.random() < self.config.mutation_rate:
-                # Small perturbation or large jump
+                # Small perturbation: ±strength * value
+                delta = mutated[i] * self.config.mutation_strength
                 if self.rng.random() < 0.5:
-                    # Small: += strength * value
-                    delta = mutated[i] * self.config.mutation_strength
-                    mutated[i] += delta if self.rng.random() < 0.5 else -delta
+                    mutated[i] += delta
                 else:
-                    # Large: sample uniform
-                    mutated[i] = self.rng.uniform(self.bounds[i, 0], self.bounds[i, 1])
+                    mutated[i] -= delta
+            else:
+                # Large: uniform resample from bounds
+                mutated[i] = self.rng.uniform(self.bounds[i, 0], self.bounds[i, 1])
 
             # Clip to bounds
             mutated[i] = np.clip(mutated[i], self.bounds[i, 0], self.bounds[i, 1])
@@ -893,22 +965,25 @@ class FDDCOptimizer:
         return mutated
 
     def _crossover_sigma(self, parent1: np.ndarray, parent2: np.ndarray) -> np.ndarray:
-        """Crossover for sigma weights (special logic)."""
-        # Start with base sigma (all 1s)
+        """Crossover for sigma weights.
+
+        Matches Thomas's breed_sigma: start from base (all 1s), find modified
+        positions from both parents, randomly select unique positions to boost.
+        Rejection sampling guarantees unique positions (no double-boosting).
+        """
         child = np.ones_like(parent1)
 
-        # Find modified positions in both parents
-        modified_p1 = np.where(parent1 > 1)[0]
-        modified_p2 = np.where(parent2 > 1)[0]
-
-        # Combine and sample
-        all_modified = np.concatenate([modified_p1, modified_p2])
+        # Find modified positions in both parents (may contain duplicates)
+        modified_p1 = set(np.where(parent1 > 1)[0].tolist())
+        modified_p2 = set(np.where(parent2 > 1)[0].tolist())
+        all_modified = list(modified_p1 | modified_p2)
 
         if len(all_modified) > 0:
-            # Randomly select positions to modify
-            n_select = self.config.sigma_points_to_distribute
-            selected = self.rng.choice(all_modified, size=min(n_select, len(all_modified)), replace=False)
-
+            n_select = min(self.config.sigma_points_to_distribute,
+                           len(all_modified))
+            # Rejection sampling: pick unique positions
+            selected = self.rng.choice(all_modified, size=n_select,
+                                       replace=False)
             child[selected] += self.config.sigma_points_per_index
 
         return child

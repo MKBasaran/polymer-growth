@@ -101,19 +101,9 @@ def fit(experimental_data, generations, population, seed, output):
     # Setup objective function
     objective = MinMaxV2ObjectiveFunction(exp_values)
 
-    # Define parameter bounds (from thesis)
-    bounds = np.array([
-        [100, 10000],          # time_sim
-        [1000, 100000],        # number_of_molecules
-        [10000, 100000000],    # monomer_pool
-        [0.1, 0.99],          # p_growth
-        [0.00001, 0.01],      # p_death
-        [0.1, 0.99],          # p_dead_react
-        [0.1, 0.99],          # l_exponent
-        [0.1, 0.99],          # d_exponent
-        [0.1, 0.99],          # l_naked
-        [0, 1]                # kill_spawns_new (0 or 1)
-    ])
+    # Parameter bounds (single source of truth)
+    from polymer_growth.core.parameters import ParameterBounds
+    bounds = ParameterBounds().as_array()
 
     # Create wrapper for objective function that runs simulation
     def objective_wrapper(params_array, sigma=None):
