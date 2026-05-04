@@ -10,7 +10,7 @@ A Python tool for simulating agent-based polymer chain growth and fitting simula
 
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/polymer-growth.git
+git clone https://github.com/MKBasaran/polymer-growth.git
 cd polymer-growth
 
 # Create virtual environment (recommended)
@@ -81,11 +81,9 @@ polymer-growth/
 │   ├── objective/             # Cost functions (MinMaxV2)
 │   ├── cli/                   # Command-line interface
 │   └── gui/                   # PySide6 graphical interface
-├── tests/                     # Test suite (29 tests, all passing)
-├── data/                      # Experimental data files
-├── runs/                      # Auto-generated run outputs
-├── standalone_prototypes/     # Development prototypes
-└── docs/                      # Documentation
+├── tests/                     # Test suite (29 tests)
+├── standalone_prototypes/     # Algorithm prototypes
+└── program code/              # Legacy thesis code + experimental data
 ```
 
 ## Simulation Parameters

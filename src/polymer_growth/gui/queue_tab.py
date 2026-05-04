@@ -9,6 +9,7 @@ Designed for long-running jobs (30-40 min) with rich live feedback:
 """
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -21,16 +22,18 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QSpinBox,
     QLineEdit, QFileDialog, QTextEdit, QMessageBox, QAbstractItemView,
-    QSplitter
+    QSplitter, QDialog
 )
 from PySide6.QtCore import QThread, Signal, Slot, Qt, QTimer
 from PySide6.QtGui import QFont, QColor, QBrush
 
 from polymer_growth.core import simulate, SimulationParams
-from polymer_growth.core.run_manager import RunManager
 from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
 from polymer_growth.gui.plotting import PlotWidget
+from polymer_growth.gui.save_dialog import (
+    SaveLocationDialog, save_optimization_to_dir, sanitize_filename,
+)
 
 
 class TaskStatus(Enum):
@@ -56,6 +59,7 @@ class QueueTask:
     result: Any = None
     error: Optional[str] = None
     cost_history: List[float] = field(default_factory=list)
+    console_lines: List[str] = field(default_factory=list)
 
     @property
     def elapsed(self) -> Optional[timedelta]:
@@ -94,9 +98,10 @@ class QueueWorker(QThread):
     task_failed = Signal(int, str)          # task_id, error
     queue_finished = Signal()
 
-    def __init__(self, tasks: List[QueueTask]):
+    def __init__(self, tasks: List[QueueTask], save_base_dir: Optional[Path] = None):
         super().__init__()
         self._tasks = tasks
+        self._save_base_dir = save_base_dir
         self._is_cancelled = False
         self._current_task_cancelled = False
 
@@ -140,30 +145,58 @@ class QueueWorker(QThread):
         config = FDDCConfig(
             population_size=p.get("population_size", 50),
             max_generations=p.get("max_generations", 20),
-            n_workers=p.get("n_workers", None)
+            n_workers=p.get("n_workers", None),
+            sigma_length=int(np.count_nonzero(exp_values)),
         )
 
         max_gen = config.max_generations
 
-        def objective_wrapper(params_array, sigma=None):
+        def objective_wrapper(params_array, sigma=None, eval_seed=None):
             if self._current_task_cancelled:
                 raise InterruptedError("Task cancelled")
 
-            params_array = np.asarray(params_array).flatten().tolist()
+            params_list = np.asarray(params_array).flatten().tolist()
             sim_params = SimulationParams(
-                time_sim=int(params_array[0]),
-                number_of_molecules=int(params_array[1]),
-                monomer_pool=int(params_array[2]),
-                p_growth=params_array[3],
-                p_death=params_array[4],
-                p_dead_react=params_array[5],
-                l_exponent=params_array[6],
-                d_exponent=params_array[7],
-                l_naked=params_array[8],
-                kill_spawns_new=bool(round(params_array[9]))
+                time_sim=int(params_list[0]),
+                number_of_molecules=int(params_list[1]),
+                monomer_pool=int(params_list[2]),
+                p_growth=params_list[3],
+                p_death=params_list[4],
+                p_dead_react=params_list[5],
+                l_exponent=params_list[6],
+                d_exponent=params_list[7],
+                l_naked=params_list[8],
+                kill_spawns_new=bool(round(params_list[9]))
             )
-            rng = np.random.default_rng()
+            rng = np.random.default_rng(
+                eval_seed if eval_seed is not None else seed
+            )
             dist = simulate(sim_params, rng)
+            return objective.compute_cost(dist, sigma=sigma)
+
+        def _make_params(params_array):
+            params_list = np.asarray(params_array).flatten().tolist()
+            return SimulationParams(
+                time_sim=int(params_list[0]),
+                number_of_molecules=int(params_list[1]),
+                monomer_pool=int(params_list[2]),
+                p_growth=params_list[3],
+                p_death=params_list[4],
+                p_dead_react=params_list[5],
+                l_exponent=params_list[6],
+                d_exponent=params_list[7],
+                l_naked=params_list[8],
+                kill_spawns_new=bool(round(params_list[9]))
+            )
+
+        def simulate_fn(params_array, eval_seed):
+            if self._current_task_cancelled:
+                raise InterruptedError("Task cancelled")
+            rng = np.random.default_rng(
+                eval_seed if eval_seed is not None else seed)
+            return simulate(_make_params(params_array), rng)
+
+        def cost_fn(dist, sigma=None):
             return objective.compute_cost(dist, sigma=sigma)
 
         def progress_callback(gen, cost):
@@ -178,28 +211,41 @@ class QueueWorker(QThread):
                 self.task_console.emit(task.task_id, message)
 
         # Thomas's exact bounds (from 2020 thesis)
+        bounds = np.array([
+            [100, 3000], [10000, 120000], [1000000, 5000000],
+            [0.1, 0.99], [0.0001, 0.002], [0.1, 0.9],
+            [0.1, 0.9], [0.1, 0.9], [0.1, 1.0], [0, 1]
+        ])
         optimizer = FDDCOptimizer(
-            bounds=np.array([
-                [100, 3000], [10000, 120000], [1000000, 5000000],
-                [0.1, 0.99], [0.0001, 0.002], [0.1, 0.9],
-                [0.1, 0.9], [0.1, 0.9], [0.1, 1.0], [0, 1]
-            ]),
+            bounds=bounds,
             objective_function=objective_wrapper,
             config=config,
             callback=progress_callback,
             console_callback=console_callback,
+            simulate_fn=simulate_fn,
+            cost_fn=cost_fn,
         )
 
+        start_time = time.time()
         result = optimizer.optimize(seed=seed)
+        elapsed_sec = time.time() - start_time
 
-        # Save run
-        manager = RunManager()
-        data_name = Path(data_path).stem
-        manager.start_run("optimization", f"{task.name}_{data_name}")
-        manager.save_optimization_config(config)
-        manager.save_optimization_results(result)
+        # Save run (best-effort -- don't fail the task if save fails)
+        run_dir = ""
+        if self._save_base_dir is not None:
+            try:
+                safe_name = sanitize_filename(task.name)
+                task_dir = self._save_base_dir / safe_name
+                save_optimization_to_dir(
+                    task_dir, config, result,
+                    seed=seed, data_path=data_path,
+                    bounds=bounds, elapsed_sec=elapsed_sec,
+                )
+                run_dir = str(task_dir)
+            except Exception:
+                pass
 
-        return {"result": result, "run_dir": str(manager.current_run_dir)}
+        return {"result": result, "run_dir": run_dir}
 
 
 class TaskQueueTab(QWidget):
@@ -211,7 +257,18 @@ class TaskQueueTab(QWidget):
         self.worker: Optional[QueueWorker] = None
         self._timer = QTimer()
         self._timer.timeout.connect(self._refresh_table)
+        self._status_bar = None
+        self._save_base_dir: Optional[Path] = None
+        self._selected_task_id: Optional[int] = None
+        # Console streaming buffer
+        self._console_buffer: list = []
+        self._console_timer = QTimer()
+        self._console_timer.setInterval(50)
+        self._console_timer.timeout.connect(self._flush_console_line)
         self.init_ui()
+
+    def set_status_bar(self, status_bar):
+        self._status_bar = status_bar
 
     def is_running(self) -> bool:
         """Check if any optimization is currently running."""
@@ -412,6 +469,16 @@ class TaskQueueTab(QWidget):
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
 
+    def _unique_name(self, base: str) -> str:
+        """Return a unique task name, appending (1), (2), ... if needed."""
+        existing = {t.name for t in self.tasks}
+        if base not in existing:
+            return base
+        n = 1
+        while f"{base} ({n})" in existing:
+            n += 1
+        return f"{base} ({n})"
+
     def _browse_data(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Experimental Data",
@@ -427,7 +494,9 @@ class TaskQueueTab(QWidget):
                                 "Select an experimental data file first.")
             return
 
-        name = self.name_input.text().strip() or f"Opt {_new_task_id() + 1}"
+        name = self._unique_name(
+            self.name_input.text().strip() or "Optimization"
+        )
         params = {
             "data_path": data_path,
             "population_size": self.opt_pop_input.value(),
@@ -448,13 +517,20 @@ class TaskQueueTab(QWidget):
 
     def _add_batch(self):
         """Add multiple optimization runs with varying seeds."""
+        data_path = self.opt_data_input.text().strip()
+        if not data_path or not Path(data_path).exists():
+            QMessageBox.warning(self, "Missing Data",
+                                "Select an experimental data file first.")
+            return
+
         count = self.batch_count.value()
         base_seed = self.opt_seed_input.value()
+        base_name = self.name_input.text().strip() or "Batch"
 
         for i in range(count):
-            self.opt_seed_input.setValue(base_seed + i)
-            name = self.name_input.text().strip() or "Batch"
-            self.name_input.setText(f"{name} (seed={base_seed + i})")
+            seed = base_seed + i
+            self.opt_seed_input.setValue(seed)
+            self.name_input.setText(f"{base_name} (seed={seed})")
             self._add_task()
 
         self.name_input.clear()
@@ -462,15 +538,16 @@ class TaskQueueTab(QWidget):
 
     def _remove_selected(self):
         row = self.table.currentRow()
-        if 0 <= row < len(self.tasks):
-            task = self.tasks[row]
-            if task.status == TaskStatus.RUNNING:
-                QMessageBox.warning(self, "Cannot Remove",
-                                    "Cannot remove a running task. Cancel it first.")
-                return
-            self.tasks.pop(row)
-            self._refresh_table()
-            self._update_overall_label()
+        if row < 0 or row >= len(self.tasks):
+            return
+        task = self.tasks[row]
+        if task.status == TaskStatus.RUNNING:
+            QMessageBox.warning(self, "Cannot Remove",
+                                "Cannot remove a running task. Cancel it first.")
+            return
+        self.tasks.pop(row)
+        self._refresh_table()
+        self._update_overall_label()
 
     def _clear_finished(self):
         self.tasks = [t for t in self.tasks
@@ -479,6 +556,9 @@ class TaskQueueTab(QWidget):
         self._update_overall_label()
 
     def _run_queue(self):
+        if self.is_running():
+            return
+
         pending = [t for t in self.tasks if t.status == TaskStatus.PENDING]
         if not pending:
             QMessageBox.information(self, "Nothing to Run", "No pending tasks in queue.")
@@ -499,12 +579,34 @@ class TaskQueueTab(QWidget):
                 if reply != QMessageBox.Yes:
                     return
 
+        # Ask where to save before starting
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+        suggested = f"queue_{len(pending)}_runs_{ts}"
+
+        dlg = SaveLocationDialog(
+            self,
+            suggested_name=suggested,
+            title="Save Queue Results",
+            start_label="Run Queue",
+            description=(
+                f"Choose a name and location for this batch of {len(pending)} tasks.\n"
+                f"Each task will get its own subfolder inside it."
+            ),
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        self._save_base_dir = dlg.save_path()
+
         self.run_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.cancel_all_btn.setEnabled(True)
         self.console_output.clear()
 
-        self.worker = QueueWorker(self.tasks)
+        if self._status_bar:
+            self._status_bar.showMessage(f"Queue running: {len(pending)} tasks...")
+
+        self.worker = QueueWorker(self.tasks, save_base_dir=self._save_base_dir)
         self.worker.task_started.connect(self._on_task_started)
         self.worker.task_progress.connect(self._on_task_progress)
         self.worker.task_cost_update.connect(self._on_task_cost)
@@ -546,11 +648,11 @@ class TaskQueueTab(QWidget):
             task.status = TaskStatus.RUNNING
             task.start_time = time.time()
             task.cost_history = []
+            task.console_lines = [f"--- Starting: {task.name} ---"]
+            self._console_buffer.clear()
             self._refresh_table()
             self._update_overall_label()
-            self.console_output.clear()
-            self.console_output.append(f"--- Starting: {task.name} ---")
-            # Auto-select the running task row
+            # Auto-select the running task row (which triggers console switch)
             row = self._find_task_row(task_id)
             if row >= 0:
                 self.table.selectRow(row)
@@ -575,10 +677,25 @@ class TaskQueueTab(QWidget):
 
     @Slot(int, str)
     def _on_console_message(self, task_id: int, message: str):
-        self.console_output.append(message)
-        # Auto-scroll
-        sb = self.console_output.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        # Store per-task
+        task = self._find_task(task_id)
+        if task:
+            task.console_lines.append(message)
+
+        # Only stream to display if this task is currently selected
+        if self._selected_task_id == task_id:
+            self._console_buffer.append(message)
+            if not self._console_timer.isActive():
+                self._console_timer.start()
+
+    def _flush_console_line(self):
+        if self._console_buffer:
+            line = self._console_buffer.pop(0)
+            self.console_output.append(line)
+            sb = self.console_output.verticalScrollBar()
+            sb.setValue(sb.maximum())
+        else:
+            self._console_timer.stop()
 
     @Slot(int, object)
     def _on_task_finished(self, task_id: int, result):
@@ -589,10 +706,28 @@ class TaskQueueTab(QWidget):
             task.progress = 100
             task.result = result
             task.current_info = "Completed"
+            task.console_lines.append(f"--- Completed: {task.name} ---")
             self._refresh_table()
             self._update_overall_label()
             self._update_detail_for_task(task)
-            self.console_output.append(f"--- Completed: {task.name} ---\n")
+            if self._selected_task_id == task_id:
+                self._console_buffer.append(f"--- Completed: {task.name} ---")
+                if not self._console_timer.isActive():
+                    self._console_timer.start()
+
+            # Save convergence plot to the task's result folder
+            run_dir = ""
+            if isinstance(result, dict):
+                run_dir = result.get("run_dir", "")
+            if run_dir and task.cost_history:
+                try:
+                    self.live_plot.canvas.plot_convergence(task.cost_history)
+                    self.live_plot.canvas.fig.savefig(
+                        Path(run_dir) / "convergence.png",
+                        dpi=150, bbox_inches='tight'
+                    )
+                except Exception:
+                    pass
 
     @Slot(int, str)
     def _on_task_failed(self, task_id: int, error: str):
@@ -603,32 +738,74 @@ class TaskQueueTab(QWidget):
             task.end_time = time.time()
             task.error = error
             task.current_info = error
+            task.console_lines.append(f"--- Failed: {error} ---")
             self._refresh_table()
             self._update_overall_label()
-            self.console_output.append(f"--- Failed: {error} ---\n")
+            if self._selected_task_id == task_id:
+                self._console_buffer.append(f"--- Failed: {error} ---")
+                if not self._console_timer.isActive():
+                    self._console_timer.start()
 
     @Slot()
     def _on_queue_finished(self):
         self.run_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.cancel_all_btn.setEnabled(False)
+        self.worker = None
         self._timer.stop()
+        self._console_buffer.clear()
+        self._console_timer.stop()
         self._refresh_table()
         self._update_overall_label()
 
         completed = sum(1 for t in self.tasks if t.status == TaskStatus.COMPLETED)
         failed = sum(1 for t in self.tasks if t.status == TaskStatus.FAILED)
-        QMessageBox.information(
-            self, "Queue Complete",
-            f"Queue finished: {completed} completed, {failed} failed."
-        )
+        cancelled = sum(1 for t in self.tasks if t.status == TaskStatus.CANCELLED)
+
+        # Build detailed summary
+        lines = [f"Queue finished: {completed} completed"]
+        if failed:
+            lines[0] += f", {failed} failed"
+        if cancelled:
+            lines[0] += f", {cancelled} cancelled"
+        lines[0] += "."
+        lines.append("")
+
+        for t in self.tasks:
+            status = t.status.value
+            detail = ""
+            if t.status == TaskStatus.COMPLETED and t.result:
+                res = t.result
+                if isinstance(res, dict) and "result" in res:
+                    opt_r = res["result"]
+                    if hasattr(opt_r, "best_cost"):
+                        detail = f"  best cost {opt_r.best_cost:.4f}"
+            elif t.status == TaskStatus.FAILED and t.error:
+                detail = f"  {t.error}"
+            elapsed = f" ({t.elapsed})" if t.elapsed else ""
+            lines.append(f"  {t.name}: {status}{elapsed}{detail}")
+
+        if self._save_base_dir is not None:
+            lines.append(f"\nResults saved to:\n  {self._save_base_dir}")
+
+        summary = "\n".join(lines)
+
+        if self._status_bar:
+            self._status_bar.showMessage(lines[0])
+        QMessageBox.information(self, "Queue Complete", summary)
 
     def _on_row_selected(self, row):
         if 0 <= row < len(self.tasks):
             task = self.tasks[row]
+            self._selected_task_id = task.task_id
             self._update_detail_for_task(task)
             if task.cost_history:
                 self.live_plot.canvas.plot_convergence(task.cost_history)
+            # Switch console output to this task's stored lines
+            self._console_buffer.clear()
+            self._console_timer.stop()
+            self.console_output.clear()
+            self.console_output.setText("\n".join(task.console_lines))
 
     def _update_detail_for_task(self, task: QueueTask):
         lines = [
@@ -714,7 +891,7 @@ class TaskQueueTab(QWidget):
             brush = QBrush(color)
 
             items = [
-                str(task.task_id),
+                str(row + 1),
                 task.name,
                 task.status.value,
                 (f"{task.progress}% - {task.current_info}"

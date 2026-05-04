@@ -49,26 +49,37 @@ THOMAS_TABLE_VIII = {
 }
 
 
+def _make_sim_params(params_array):
+    p = np.asarray(params_array).flatten().tolist()
+    return SimulationParams(
+        time_sim=int(p[0]), number_of_molecules=int(p[1]),
+        monomer_pool=int(p[2]), p_growth=p[3], p_death=p[4],
+        p_dead_react=p[5], l_exponent=p[6], d_exponent=p[7],
+        l_naked=p[8], kill_spawns_new=bool(round(p[9]))
+    )
+
+
 def make_objective_new(exp_values):
     objective = MinMaxV2ObjectiveFunction(exp_values)
-    def wrapper(params_array, sigma=None):
-        p = np.asarray(params_array).flatten().tolist()
-        sp = SimulationParams(
-            time_sim=int(p[0]), number_of_molecules=int(p[1]),
-            monomer_pool=int(p[2]), p_growth=p[3], p_death=p[4],
-            p_dead_react=p[5], l_exponent=p[6], d_exponent=p[7],
-            l_naked=p[8], kill_spawns_new=bool(round(p[9]))
-        )
-        dist = simulate(sp, np.random.default_rng())
+    def wrapper(params_array, sigma=None, eval_seed=None):
+        rng = np.random.default_rng(eval_seed)
+        dist = simulate(_make_sim_params(params_array), rng)
         return objective.compute_cost(dist, sigma=sigma)
     return wrapper
 
 
+def make_simulate_new():
+    def sim_fn(params_array, eval_seed):
+        rng = np.random.default_rng(eval_seed)
+        return simulate(_make_sim_params(params_array), rng)
+    return sim_fn
+
+
 def make_objective_thomas(exp_values):
     objective = MinMaxV2ObjectiveFunction(exp_values)
-    def wrapper(params_array, sigma=None):
+    def wrapper(params_array, sigma=None, eval_seed=None):
+        np.random.seed(eval_seed % (2**32) if eval_seed is not None else None)
         p = np.asarray(params_array).flatten().tolist()
-        np.random.seed(None)
         living, dead, coupled = thomas_sim.polymer(
             time_sim=int(p[0]), number_of_molecules=int(p[1]),
             monomer_pool=int(p[2]), p_growth=p[3], p_death=p[4],
@@ -86,22 +97,53 @@ def make_objective_thomas(exp_values):
     return wrapper
 
 
+def make_simulate_thomas():
+    def sim_fn(params_array, eval_seed):
+        np.random.seed(eval_seed % (2**32) if eval_seed is not None else None)
+        p = np.asarray(params_array).flatten().tolist()
+        living, dead, coupled = thomas_sim.polymer(
+            time_sim=int(p[0]), number_of_molecules=int(p[1]),
+            monomer_pool=int(p[2]), p_growth=p[3], p_death=p[4],
+            p_dead_react=p[5], l_exponent=p[6], d_exponent=p[7],
+            l_naked=p[8],
+            kill_spawns_new=1 if bool(round(p[9])) else 0,
+            video=0, coloured=0, final_plot=0
+        )
+        return Distribution(
+            living=np.asarray(living, dtype=np.float64),
+            dead=np.asarray(dead, dtype=np.float64),
+            coupled=np.asarray(coupled, dtype=np.float64)
+        )
+    return sim_fn
+
+
+def make_cost_fn(exp_values):
+    objective = MinMaxV2ObjectiveFunction(exp_values)
+    def cost_fn(dist, sigma=None):
+        return objective.compute_cost(dist, sigma=sigma)
+    return cost_fn
+
+
 def run_fddc(dataset_key: str, gen_count: int, pop_size: int,
-             impl: str, seed: int = 42):
+             impl: str, seed: int = 42, workers: int = None):
     """Run one FDDC optimization. Returns results dict."""
     ref = THOMAS_TABLE_VIII[dataset_key]
     data_path = str(DATA_DIR / ref["file"])
     _, exp_values = load_experimental_data(data_path)
 
     obj_fn = make_objective_new(exp_values) if impl == "new" else make_objective_thomas(exp_values)
+    sim_fn = make_simulate_new() if impl == "new" else make_simulate_thomas()
+    cost_fn = make_cost_fn(exp_values)
 
     import os
-    workers = max(1, (os.cpu_count() or 4) - 1)
+    if workers is None:
+        workers = max(1, (os.cpu_count() or 4) - 1)
 
     config = FDDCConfig(
         population_size=pop_size,
         max_generations=gen_count,
         n_workers=workers,
+        sigma_length=int(np.count_nonzero(exp_values)),
         **FDDC_KWARGS,
     )
 
@@ -127,6 +169,7 @@ def run_fddc(dataset_key: str, gen_count: int, pop_size: int,
     optimizer = FDDCOptimizer(
         bounds=BOUNDS, objective_function=obj_fn, config=config,
         callback=progress_cb, console_callback=console_cb,
+        simulate_fn=sim_fn, cost_fn=cost_fn,
     )
 
     start = time.time()

@@ -2,6 +2,8 @@
 
 import os
 import sys
+import time as _time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -10,18 +12,20 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QPushButton, QLineEdit, QSpinBox, QDoubleSpinBox,
     QCheckBox, QFileDialog, QTextEdit, QProgressBar, QGroupBox, QFormLayout,
-    QMessageBox, QComboBox, QToolButton, QSizePolicy
+    QMessageBox, QComboBox, QToolButton, QSizePolicy, QDialog
 )
-from PySide6.QtCore import QThread, Signal, Slot, Qt
+from PySide6.QtCore import QThread, Signal, Slot, Qt, QTimer
 from PySide6.QtGui import QFont, QIcon
 
 from polymer_growth.core import simulate, SimulationParams, Distribution
-from polymer_growth.core.run_manager import RunManager
 from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
 from polymer_growth.gui.plotting import PlotWidget
 from polymer_growth.gui.tooltips import PARAM_INFO, METRIC_INFO
 from polymer_growth.gui.queue_tab import TaskQueueTab
+from polymer_growth.gui.save_dialog import (
+    SaveLocationDialog, save_optimization_to_dir,
+)
 
 
 def _info_button(tooltip_html: str) -> QToolButton:
@@ -101,7 +105,11 @@ class OptimizationWorker(QThread):
             exp_lengths, exp_values = load_experimental_data(self.experimental_data_path)
             objective = MinMaxV2ObjectiveFunction(exp_values)
 
-            def objective_wrapper(params_array, sigma=None):
+            # Set sigma length to match experimental data (non-zero bins)
+            if self.config.sigma_length is None:
+                self.config.sigma_length = int(np.count_nonzero(exp_values))
+
+            def objective_wrapper(params_array, sigma=None, eval_seed=None):
                 if self._is_cancelled:
                     raise InterruptedError("Optimization cancelled")
 
@@ -121,8 +129,35 @@ class OptimizationWorker(QThread):
                     kill_spawns_new=bool(round(params_list[9]))
                 )
 
-                rng = np.random.default_rng()
+                rng = np.random.default_rng(
+                    eval_seed if eval_seed is not None else self.seed
+                )
                 dist = simulate(params, rng)
+                return objective.compute_cost(dist, sigma=sigma)
+
+            def _make_params(params_array):
+                params_list = np.asarray(params_array).flatten().tolist()
+                return SimulationParams(
+                    time_sim=int(params_list[0]),
+                    number_of_molecules=int(params_list[1]),
+                    monomer_pool=int(params_list[2]),
+                    p_growth=params_list[3],
+                    p_death=params_list[4],
+                    p_dead_react=params_list[5],
+                    l_exponent=params_list[6],
+                    d_exponent=params_list[7],
+                    l_naked=params_list[8],
+                    kill_spawns_new=bool(round(params_list[9]))
+                )
+
+            def simulate_fn(params_array, eval_seed):
+                if self._is_cancelled:
+                    raise InterruptedError("Optimization cancelled")
+                rng = np.random.default_rng(
+                    eval_seed if eval_seed is not None else self.seed)
+                return simulate(_make_params(params_array), rng)
+
+            def cost_fn(dist, sigma=None):
                 return objective.compute_cost(dist, sigma=sigma)
 
             def progress_callback(gen, cost):
@@ -138,7 +173,9 @@ class OptimizationWorker(QThread):
                 objective_function=objective_wrapper,
                 config=self.config,
                 callback=progress_callback,
-                console_callback=console_callback
+                console_callback=console_callback,
+                simulate_fn=simulate_fn,
+                cost_fn=cost_fn,
             )
 
             result = optimizer.optimize(seed=self.seed)
@@ -160,7 +197,12 @@ class SimulationTab(QWidget):
         self.worker: Optional[SimulationWorker] = None
         self.last_result = None
         self.last_kinetics = None
+        self.last_params: Optional[SimulationParams] = None
+        self._status_bar = None
         self.init_ui()
+
+    def set_status_bar(self, status_bar):
+        self._status_bar = status_bar
 
     def init_ui(self):
         layout = QHBoxLayout()
@@ -246,12 +288,16 @@ class SimulationTab(QWidget):
         btn_layout = QHBoxLayout()
         self.run_btn = QPushButton("Run Simulation")
         self.run_btn.clicked.connect(self.run_simulation)
-        self.export_btn = QPushButton("Export Kinetics")
-        self.export_btn.clicked.connect(self.export_kinetics)
+        self.export_btn = QPushButton("Export Run")
+        self.export_btn.clicked.connect(self.export_run)
         self.export_btn.setEnabled(False)
-        self.export_btn.setToolTip("Export per-timestep Mn/Mw/PDI data")
+        self.export_btn.setToolTip("Save all results, data, and plots to a folder")
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self.clear_simulation)
+        self.clear_btn.setToolTip("Reset all results and plots")
         btn_layout.addWidget(self.run_btn)
         btn_layout.addWidget(self.export_btn)
+        btn_layout.addWidget(self.clear_btn)
         btn_layout.addStretch()
         left_layout.addLayout(btn_layout)
 
@@ -302,23 +348,34 @@ class SimulationTab(QWidget):
 
     @Slot()
     def run_simulation(self):
-        params = SimulationParams(
-            time_sim=self.time_input.value(),
-            number_of_molecules=self.molecules_input.value(),
-            monomer_pool=self.monomer_input.value(),
-            p_growth=self.p_growth_input.value(),
-            p_death=self.p_death_input.value(),
-            p_dead_react=self.p_dead_react_input.value(),
-            l_exponent=self.l_exponent_input.value(),
-            d_exponent=self.d_exponent_input.value(),
-            l_naked=self.l_naked_input.value(),
-            kill_spawns_new=self.kill_spawns_input.isChecked()
-        )
+        if self.worker and self.worker.isRunning():
+            return
 
+        try:
+            params = SimulationParams(
+                time_sim=self.time_input.value(),
+                number_of_molecules=self.molecules_input.value(),
+                monomer_pool=self.monomer_input.value(),
+                p_growth=self.p_growth_input.value(),
+                p_death=self.p_death_input.value(),
+                p_dead_react=self.p_dead_react_input.value(),
+                l_exponent=self.l_exponent_input.value(),
+                d_exponent=self.d_exponent_input.value(),
+                l_naked=self.l_naked_input.value(),
+                kill_spawns_new=self.kill_spawns_input.isChecked()
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Parameter Error",
+                                 f"Invalid simulation parameters:\n{e}")
+            return
+
+        self.last_params = params
         seed = self.seed_input.value()
         self.run_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         self.results_text.setText("Running simulation...")
+        if self._status_bar:
+            self._status_bar.showMessage("Running simulation...")
 
         track_kinetics = self.track_kinetics_input.isChecked()
         self.worker = SimulationWorker(params, seed, track_kinetics=track_kinetics)
@@ -329,49 +386,85 @@ class SimulationTab(QWidget):
     @Slot(object)
     def on_simulation_finished(self, result):
         self.run_btn.setEnabled(True)
+        self.worker = None
 
-        from polymer_growth.core.simulation import SimulationResult
-        if isinstance(result, SimulationResult):
-            dist = result.distribution
-            self.last_kinetics = result.kinetics
-            self.export_btn.setEnabled(self.last_kinetics is not None)
-        else:
-            dist = result
-            self.last_kinetics = None
-            self.export_btn.setEnabled(False)
+        try:
+            from polymer_growth.core.simulation import SimulationResult
+            if isinstance(result, SimulationResult):
+                dist = result.distribution
+                self.last_kinetics = result.kinetics
+            else:
+                dist = result
+                self.last_kinetics = None
 
-        self.last_result = dist
+            self.last_result = dist
 
-        # Display results
-        stats = dist.stats()
-        poly = dist.polymer_stats()
-        results = "Simulation Complete!\n\n"
-        results += f"Living chains: {stats['n_living']:,}\n"
-        results += f"Dead chains: {stats['n_dead']:,}\n"
-        results += f"Coupled chains: {stats['n_coupled']:,}\n"
-        results += f"\nPolymer Metrics:\n"
-        results += f"  Mn: {poly['Mn']:,.1f} g/mol\n"
-        results += f"  Mw: {poly['Mw']:,.1f} g/mol\n"
-        results += f"  PDI: {poly['PDI']:.3f}\n"
-        results += f"  DP_n: {poly['DP_n']:.1f}\n"
-        results += f"  DP_w: {poly['DP_w']:.1f}\n"
+            all_chains = dist.all_chains()
+            if len(all_chains) == 0:
+                self.results_text.setText(
+                    "Simulation Complete!\n\nNo polymer chains were produced.\n"
+                    "Try increasing simulation time or adjusting probabilities."
+                )
+                self.plot_widget.canvas.plot_distribution(dist)
+                self.kinetics_group.setVisible(False)
+                if self._status_bar:
+                    self._status_bar.showMessage("Simulation complete (no chains)")
+                return
 
-        if self.last_kinetics is not None:
-            results += f"\nKinetics tracked: {len(self.last_kinetics.timesteps)} timesteps"
-            conv = self.last_kinetics.monomer_conversion[-1] * 100
-            results += f"\nFinal conversion: {conv:.1f}%"
+            stats = dist.stats()
+            poly = dist.polymer_stats()
+            results = "Simulation Complete!\n\n"
+            results += f"Living chains: {stats['n_living']:,}\n"
+            results += f"Dead chains: {stats['n_dead']:,}\n"
+            results += f"Coupled chains: {stats['n_coupled']:,}\n"
+            results += f"\nPolymer Metrics:\n"
+            results += f"  Mn: {poly['Mn']:,.1f} g/mol\n"
+            results += f"  Mw: {poly['Mw']:,.1f} g/mol\n"
+            results += f"  PDI: {poly['PDI']:.3f}\n"
+            results += f"  DP_n: {poly['DP_n']:.1f}\n"
+            results += f"  DP_w: {poly['DP_w']:.1f}\n"
 
-        self.results_text.setText(results)
+            if self.last_kinetics is not None:
+                results += f"\nKinetics tracked: {len(self.last_kinetics.timesteps)} timesteps"
+                if len(self.last_kinetics.monomer_conversion) > 0:
+                    conv = self.last_kinetics.monomer_conversion[-1] * 100
+                    results += f"\nFinal conversion: {conv:.1f}%"
 
-        # Plot distribution
-        self.plot_widget.canvas.plot_distribution(dist)
+            self.results_text.setText(results)
 
-        # Show kinetics plots if tracked
-        if self.last_kinetics is not None:
-            self.kinetics_group.setVisible(True)
-            self._update_kinetics_plot()
-        else:
-            self.kinetics_group.setVisible(False)
+            self.plot_widget.canvas.plot_distribution(dist)
+
+            if self.last_kinetics is not None:
+                self.kinetics_group.setVisible(True)
+                self._update_kinetics_plot()
+            else:
+                self.kinetics_group.setVisible(False)
+
+            self.export_btn.setEnabled(True)
+
+            if self._status_bar:
+                self._status_bar.showMessage("Simulation complete")
+
+        except Exception as e:
+            self.results_text.setText(f"Simulation finished but results could not be displayed:\n{e}")
+            QMessageBox.warning(self, "Display Error",
+                                f"Simulation completed but an error occurred displaying results:\n{e}")
+
+    @Slot()
+    def clear_simulation(self):
+        """Reset all results, data, and plots."""
+        self.last_result = None
+        self.last_kinetics = None
+        self.last_params = None
+        self.export_btn.setEnabled(False)
+        self.results_text.clear()
+        self.plot_widget.canvas.clear_plot()
+        self.plot_widget.canvas.draw()
+        self.kinetics_plot.canvas.clear_plot()
+        self.kinetics_plot.canvas.draw()
+        self.kinetics_group.setVisible(False)
+        if self._status_bar:
+            self._status_bar.showMessage("Ready")
 
     def _update_kinetics_plot(self):
         """Update kinetics plot based on selector."""
@@ -384,31 +477,127 @@ class SimulationTab(QWidget):
             self.kinetics_plot.canvas.plot_kinetics(self.last_kinetics)
 
     @Slot()
-    def export_kinetics(self):
-        if self.last_kinetics is None:
-            QMessageBox.warning(self, "No Data",
-                                "No kinetics data available. Run with 'Track Kinetics' enabled.")
+    def export_run(self):
+        """Export the complete simulation run to a named folder."""
+        if self.last_result is None:
+            QMessageBox.warning(self, "No Results",
+                                "Run a simulation first.")
             return
 
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Kinetics Data", "kinetics.csv",
-            "CSV Files (*.csv);;Excel Files (*.xlsx)"
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+        suggested = f"simulation_{ts}"
+
+        dlg = SaveLocationDialog(
+            self,
+            suggested_name=suggested,
+            title="Export Simulation Run",
+            start_label="Export",
         )
-        if file_path:
-            try:
-                if file_path.endswith('.xlsx'):
-                    self.last_kinetics.to_excel(file_path)
-                else:
-                    self.last_kinetics.to_csv(file_path)
-                QMessageBox.information(self, "Export Complete",
-                                        f"Kinetics data saved to:\n{file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Export Error", f"Failed to export: {e}")
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        save_dir = dlg.save_path()
+        saved_files = []
+
+        try:
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            # 1. Parameters (including seed)
+            import json
+            if self.last_params is not None:
+                param_data = self.last_params.to_dict()
+                param_data["seed"] = self.seed_input.value()
+                param_data["track_kinetics"] = self.track_kinetics_input.isChecked()
+                with open(save_dir / "parameters.json", "w") as f:
+                    json.dump(param_data, f, indent=2)
+                saved_files.append("parameters.json")
+
+            # 2. Results summary
+            dist = self.last_result
+            stats = dist.stats()
+            poly = dist.polymer_stats()
+            results_data = {
+                "seed": self.seed_input.value(),
+                "chain_counts": stats,
+                "polymer_metrics": poly,
+            }
+            with open(save_dir / "results.json", "w") as f:
+                json.dump(results_data, f, indent=2, default=str)
+            saved_files.append("results.json")
+
+            # 3. Chain length data as CSV (one column per chain type)
+            import pandas as pd
+            max_len = max(len(dist.living), len(dist.dead), len(dist.coupled))
+            def _pad(arr, n):
+                padded = np.full(n, np.nan)
+                padded[:len(arr)] = arr
+                return padded
+            chain_df = pd.DataFrame({
+                "living": _pad(dist.living, max_len),
+                "dead": _pad(dist.dead, max_len),
+                "coupled": _pad(dist.coupled, max_len),
+            })
+            chain_df.to_csv(save_dir / "chain_lengths.csv", index=False)
+            saved_files.append("chain_lengths.csv")
+
+            # 4. Distribution plot
+            self.plot_widget.canvas.fig.savefig(
+                save_dir / "distribution.png", dpi=150, bbox_inches='tight'
+            )
+            saved_files.append("distribution.png")
+
+            # 5. Kinetics (if tracked)
+            if self.last_kinetics is not None:
+                self.last_kinetics.to_csv(str(save_dir / "kinetics.csv"))
+                saved_files.append("kinetics.csv")
+                try:
+                    self.last_kinetics.to_excel(str(save_dir / "kinetics.xlsx"))
+                    saved_files.append("kinetics.xlsx")
+                except Exception:
+                    pass
+
+                # Kinetics Mn/Mw/PDI plot
+                self.kinetics_plot.canvas.plot_kinetics(self.last_kinetics)
+                self.kinetics_plot.canvas.fig.savefig(
+                    save_dir / "kinetics_mn_mw_pdi.png",
+                    dpi=150, bbox_inches='tight'
+                )
+                saved_files.append("kinetics_mn_mw_pdi.png")
+
+                # Chain populations plot
+                self.kinetics_plot.canvas.plot_chain_populations(self.last_kinetics)
+                self.kinetics_plot.canvas.fig.savefig(
+                    save_dir / "kinetics_populations.png",
+                    dpi=150, bbox_inches='tight'
+                )
+                saved_files.append("kinetics_populations.png")
+
+                # Restore the currently selected kinetics view
+                self._update_kinetics_plot()
+
+            file_list = "\n".join(f"  {f}" for f in saved_files)
+            QMessageBox.information(
+                self, "Export Complete",
+                f"Simulation run exported to:\n{save_dir}\n\n"
+                f"Files:\n{file_list}"
+            )
+
+        except PermissionError:
+            QMessageBox.critical(self, "Export Error",
+                                 f"Permission denied writing to:\n{save_dir}")
+        except OSError as e:
+            QMessageBox.critical(self, "Export Error",
+                                 f"Could not export run:\n{e}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export:\n{e}")
 
     @Slot(str)
     def on_simulation_error(self, error_msg: str):
         self.run_btn.setEnabled(True)
+        self.worker = None
         self.results_text.setText(f"Error: {error_msg}")
+        if self._status_bar:
+            self._status_bar.showMessage("Simulation failed")
         QMessageBox.critical(self, "Simulation Error", error_msg)
 
 
@@ -418,11 +607,21 @@ class OptimizationTab(QWidget):
     def __init__(self):
         super().__init__()
         self.worker: Optional[OptimizationWorker] = None
-        self.run_manager = RunManager()
         self.current_config: Optional[FDDCConfig] = None
         self.current_data_path: Optional[str] = None
         self.cost_history: list = []
+        self._status_bar = None
+        self._opt_start_time: Optional[float] = None
+        self._save_dir: Optional[Path] = None
+        # Console streaming buffer
+        self._console_buffer: list = []
+        self._console_timer = QTimer()
+        self._console_timer.setInterval(50)
+        self._console_timer.timeout.connect(self._flush_console_line)
         self.init_ui()
+
+    def set_status_bar(self, status_bar):
+        self._status_bar = status_bar
 
     def init_ui(self):
         main_layout = QHBoxLayout()
@@ -546,10 +745,22 @@ class OptimizationTab(QWidget):
 
     @Slot()
     def start_optimization(self):
-        data_path = self.data_path_input.text()
-        if not data_path or not Path(data_path).exists():
-            QMessageBox.warning(self, "Invalid Data File",
-                                "Please select a valid experimental data file.")
+        if self.worker and self.worker.isRunning():
+            return
+
+        data_path = self.data_path_input.text().strip()
+        if not data_path:
+            QMessageBox.warning(self, "No Data File",
+                                "Please select an experimental data file first.")
+            return
+        data_file = Path(data_path)
+        if not data_file.exists():
+            QMessageBox.warning(self, "File Not Found",
+                                f"The selected file does not exist:\n{data_path}")
+            return
+        if not data_file.is_file():
+            QMessageBox.warning(self, "Invalid File",
+                                f"The selected path is not a file:\n{data_path}")
             return
 
         # Check if queue is running
@@ -565,6 +776,22 @@ class OptimizationTab(QWidget):
             if reply != QMessageBox.Yes:
                 return
 
+        # Ask user where to save BEFORE starting
+        data_name = Path(data_path).stem
+        ts = datetime.now().strftime("%Y-%m-%d_%H%M")
+        suggested = f"optimization_{data_name}_{ts}"
+
+        dlg = SaveLocationDialog(
+            self,
+            suggested_name=suggested,
+            title="Save Optimization Results",
+            start_label="Start Optimization",
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        self._save_dir = dlg.save_path()
+
         n_workers = self.workers_input.currentData()
         config = FDDCConfig(
             population_size=self.population_input.value(),
@@ -577,7 +804,7 @@ class OptimizationTab(QWidget):
         self.cost_history = []
 
         # Thomas's exact bounds (from 2020 thesis)
-        bounds = np.array([
+        self.current_bounds = bounds = np.array([
             [100, 3000],          # time_sim
             [10000, 120000],      # number_of_molecules
             [1000000, 5000000],   # monomer_pool
@@ -591,12 +818,21 @@ class OptimizationTab(QWidget):
         ])
 
         seed = self.seed_input.value()
+        self._opt_start_time = _time.time()
         self.start_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Starting optimization...")
         self.results_text.clear()
         self.console_output.clear()
+        self._console_buffer.clear()
+
+        # Clear stale convergence plot from previous run
+        self.plot_widget.canvas.clear_plot()
+        self.plot_widget.canvas.draw()
+
+        if self._status_bar:
+            self._status_bar.showMessage("Optimization running...")
 
         self.worker = OptimizationWorker(data_path, config, bounds, seed)
         self.worker.progress.connect(self.on_progress_update)
@@ -608,6 +844,7 @@ class OptimizationTab(QWidget):
     @Slot()
     def cancel_optimization(self):
         if self.worker and self.worker.isRunning():
+            self.cancel_btn.setEnabled(False)
             self.worker.cancel()
             self.progress_label.setText("Cancelling...")
 
@@ -626,65 +863,141 @@ class OptimizationTab(QWidget):
 
     @Slot(str)
     def on_console_message(self, message: str):
-        self.console_output.append(message)
-        self.console_output.verticalScrollBar().setValue(
-            self.console_output.verticalScrollBar().maximum()
-        )
+        self._console_buffer.append(message)
+        if not self._console_timer.isActive():
+            self._console_timer.start()
+
+    def _flush_console_line(self):
+        if self._console_buffer:
+            line = self._console_buffer.pop(0)
+            self.console_output.append(line)
+            self.console_output.verticalScrollBar().setValue(
+                self.console_output.verticalScrollBar().maximum()
+            )
+        else:
+            self._console_timer.stop()
 
     @Slot(object)
     def on_optimization_finished(self, result):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.progress_bar.setValue(100)
+        self.worker = None
 
-        run_dir = None
-        try:
-            data_name = Path(self.current_data_path).stem if self.current_data_path else None
-            self.run_manager.start_run("optimization", data_name)
-            self.run_manager.save_optimization_config(self.current_config)
-            self.run_manager.save_optimization_results(result)
-            run_dir = self.run_manager.current_run_dir
-            self.progress_label.setText(f"Complete! Saved to: {run_dir.name}")
-        except Exception as e:
-            self.progress_label.setText(f"Complete! (save failed: {e})")
+        # Flush remaining console buffer
+        while self._console_buffer:
+            self._flush_console_line()
+        self._console_timer.stop()
 
-        param_names = [
-            'time_sim', 'number_of_molecules', 'monomer_pool',
-            'p_growth', 'p_death', 'p_dead_react',
-            'l_exponent', 'd_exponent', 'l_naked', 'kill_spawns_new'
-        ]
+        # Elapsed time
+        elapsed = ""
+        if self._opt_start_time is not None:
+            elapsed_sec = _time.time() - self._opt_start_time
+            elapsed = str(timedelta(seconds=int(elapsed_sec)))
 
-        results = f"Best Cost: {result.best_cost:.6f}\n"
-        if hasattr(result, 'convergence_generation') and result.convergence_generation:
-            results += f"(achieved at generation {result.convergence_generation})\n\n"
-        else:
-            results += "\n"
-
-        results += "Best Parameters:\n"
-        for name, value in zip(param_names, result.best_params):
-            if name in ['time_sim', 'number_of_molecules', 'monomer_pool']:
-                results += f"  {name}: {int(value)}\n"
-            elif name == 'kill_spawns_new':
-                results += f"  {name}: {bool(round(value))}\n"
-            else:
-                results += f"  {name}: {value:.6f}\n"
-
-        results += f"\nTotal generations: {len(result.cost_history)}\n"
-        if run_dir:
-            results += f"\nSaved to:\n  {run_dir}\n"
-
-        self.results_text.setText(results)
-
+        # Draw final convergence plot
         if result.cost_history:
             self.plot_widget.canvas.plot_convergence(result.cost_history)
+
+        # Save everything to the pre-chosen directory
+        saved_ok = False
+        if self._save_dir is not None:
+            try:
+                save_optimization_to_dir(
+                    self._save_dir, self.current_config, result,
+                    seed=self.seed_input.value(),
+                    data_path=self.current_data_path,
+                    bounds=getattr(self, 'current_bounds', None),
+                    elapsed_sec=elapsed_sec if self._opt_start_time else None,
+                )
+                # Save convergence plot as image
+                self.plot_widget.canvas.fig.savefig(
+                    self._save_dir / "convergence.png",
+                    dpi=150, bbox_inches='tight'
+                )
+                saved_ok = True
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Save Warning",
+                    f"Optimization finished but results could not be saved:\n{e}"
+                )
+
+        # Display results text
+        try:
+            param_names = [
+                'time_sim', 'number_of_molecules', 'monomer_pool',
+                'p_growth', 'p_death', 'p_dead_react',
+                'l_exponent', 'd_exponent', 'l_naked', 'kill_spawns_new'
+            ]
+
+            results = f"Best Cost: {result.best_cost:.6f}\n"
+            if hasattr(result, 'convergence_generation') and result.convergence_generation:
+                results += f"(achieved at generation {result.convergence_generation})\n\n"
+            else:
+                results += "\n"
+
+            results += "Best Parameters:\n"
+            for name, value in zip(param_names, result.best_params):
+                if name in ['time_sim', 'number_of_molecules', 'monomer_pool']:
+                    results += f"  {name}: {int(value)}\n"
+                elif name == 'kill_spawns_new':
+                    results += f"  {name}: {bool(round(value))}\n"
+                else:
+                    results += f"  {name}: {value:.6f}\n"
+
+            results += f"\nTotal generations: {len(result.cost_history)}\n"
+            if elapsed:
+                results += f"Elapsed time: {elapsed}\n"
+            if saved_ok:
+                results += f"\nSaved to:\n  {self._save_dir}\n"
+
+            self.results_text.setText(results)
+        except Exception as e:
+            self.results_text.setText(f"Optimization complete but display error:\n{e}")
+
+        # Progress label + status bar
+        if saved_ok:
+            self.progress_label.setText(
+                f"Complete ({elapsed}) -- saved to {self._save_dir.name}"
+            )
+        else:
+            self.progress_label.setText(f"Complete ({elapsed})")
+
+        if self._status_bar:
+            self._status_bar.showMessage("Optimization complete")
+
+        # Show completion popup
+        if saved_ok:
+            QMessageBox.information(
+                self, "Optimization Complete",
+                f"Optimization finished in {elapsed}.\n\n"
+                f"Results saved to:\n{self._save_dir}\n\n"
+                f"Files: config.json, optimization_results.json, "
+                f"cost_history.csv, convergence.png"
+            )
 
     @Slot(str)
     def on_optimization_error(self, error_msg: str):
         self.start_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.progress_label.setText("Optimization failed")
-        self.results_text.setText(f"Error: {error_msg}")
-        if "cancelled" not in error_msg.lower():
+        self.worker = None
+        self._console_buffer.clear()
+        self._console_timer.stop()
+
+        is_cancelled = "cancelled" in error_msg.lower()
+        if is_cancelled:
+            elapsed = ""
+            if self._opt_start_time is not None:
+                elapsed = str(timedelta(seconds=int(_time.time() - self._opt_start_time)))
+            self.progress_label.setText(f"Optimization cancelled ({elapsed})")
+            self.results_text.setText("Optimization was cancelled by user.")
+            if self._status_bar:
+                self._status_bar.showMessage("Optimization cancelled")
+        else:
+            self.progress_label.setText("Optimization failed")
+            self.results_text.setText(f"Error: {error_msg}")
+            if self._status_bar:
+                self._status_bar.showMessage("Optimization failed")
             QMessageBox.critical(self, "Optimization Error", error_msg)
 
 
@@ -699,6 +1012,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Polymer Growth Simulation & Optimization")
         self.setMinimumSize(1100, 800)
 
+        # Status bar
+        self.statusBar().showMessage("Ready")
+
         self.tabs = QTabWidget()
         self.sim_tab = SimulationTab()
         self.opt_tab = OptimizationTab()
@@ -708,6 +1024,46 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.queue_tab, "Optimization Queue")
 
         self.setCentralWidget(self.tabs)
+
+        # Give tabs a reference to the status bar for updates
+        self.sim_tab.set_status_bar(self.statusBar())
+        self.opt_tab.set_status_bar(self.statusBar())
+        self.queue_tab.set_status_bar(self.statusBar())
+
+    def closeEvent(self, event):
+        """Gracefully stop all running workers before closing."""
+        workers_running = []
+
+        if self.sim_tab.worker and self.sim_tab.worker.isRunning():
+            workers_running.append("Simulation")
+        if self.opt_tab.worker and self.opt_tab.worker.isRunning():
+            workers_running.append("Optimization")
+        if self.queue_tab.is_running():
+            workers_running.append("Optimization Queue")
+
+        if workers_running:
+            reply = QMessageBox.question(
+                self, "Tasks Running",
+                f"The following tasks are still running:\n"
+                f"  {', '.join(workers_running)}\n\n"
+                f"Are you sure you want to quit? Running tasks will be cancelled.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
+
+            # Stop all workers
+            if self.opt_tab.worker and self.opt_tab.worker.isRunning():
+                self.opt_tab.worker.cancel()
+                self.opt_tab.worker.wait(3000)
+            if self.queue_tab.worker and self.queue_tab.worker.isRunning():
+                self.queue_tab.worker.cancel_all()
+                self.queue_tab.worker.wait(3000)
+            if self.sim_tab.worker and self.sim_tab.worker.isRunning():
+                self.sim_tab.worker.wait(3000)
+
+        event.accept()
 
 
 def main():

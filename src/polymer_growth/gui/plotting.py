@@ -7,7 +7,7 @@ custom hover annotations for data inspection.
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog, QMessageBox
 from PySide6.QtCore import Signal
 
 from polymer_growth.core import Distribution
@@ -61,55 +61,57 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
 
     def _on_hover(self, event):
         """Show fixed-position label when hovering over data."""
-        if event.inaxes is None or event.inaxes not in self.fig.axes:
-            if self._hover_text.get_visible():
-                self._hover_text.set_visible(False)
-                self.draw_idle()
-            return
+        try:
+            if event.inaxes is None or event.inaxes not in self.fig.axes:
+                if self._hover_text.get_visible():
+                    self._hover_text.set_visible(False)
+                    self.draw_idle()
+                return
 
-        found = False
+            found = False
 
-        # Check histogram bars
-        for patches, bin_edges, counts, label in self._hover_bars:
-            for i, patch in enumerate(patches):
-                if patch.contains_point([event.x, event.y]):
-                    x_lo, x_hi = bin_edges[i], bin_edges[i + 1]
-                    count = counts[i]
-                    center = (x_lo + x_hi) / 2
-                    mw = center * 99.13 + 180.0
-                    text = (
-                        f"Chain length: {x_lo:.0f} - {x_hi:.0f}\n"
-                        f"Count: {int(count):,}\n"
-                        f"MW: {mw:,.0f} g/mol"
-                    )
-                    self._show_hover(text, "#d6eaf8")
-                    found = True
-                    break
-            if found:
-                break
-
-        # Check line/scatter artists
-        if not found:
-            for artist, (x_data, y_data, label, color) in zip(
-                self._hover_artists, self._hover_data
-            ):
-                contained, info = artist.contains(event)
-                if contained:
-                    idx = info.get("ind", [None])
-                    if idx is not None and len(idx) > 0:
-                        i = idx[0]
-                        x_val = x_data[i] if i < len(x_data) else 0
-                        y_val = y_data[i] if i < len(y_data) else 0
-                        text = f"{label}\nt = {x_val:,.0f}  val = {y_val:,.2f}"
-                        # Use a lightened version of the line color
-                        self._show_hover(text, color)
+            # Check histogram bars
+            for patches, bin_edges, counts, label in self._hover_bars:
+                for i, patch in enumerate(patches):
+                    if patch.contains_point([event.x, event.y]):
+                        x_lo, x_hi = bin_edges[i], bin_edges[i + 1]
+                        count = counts[i]
+                        center = (x_lo + x_hi) / 2
+                        mw = center * 99.13 + 180.0
+                        text = (
+                            f"Chain length: {x_lo:.0f} - {x_hi:.0f}\n"
+                            f"Count: {int(count):,}\n"
+                            f"MW: {mw:,.0f} g/mol"
+                        )
+                        self._show_hover(text, "#d6eaf8")
                         found = True
                         break
+                if found:
+                    break
 
-        if not found and self._hover_text.get_visible():
-            self._hover_text.set_visible(False)
+            # Check line/scatter artists
+            if not found:
+                for artist, (x_data, y_data, label, color) in zip(
+                    self._hover_artists, self._hover_data
+                ):
+                    contained, info = artist.contains(event)
+                    if contained:
+                        idx = info.get("ind", [None])
+                        if idx is not None and len(idx) > 0:
+                            i = idx[0]
+                            x_val = x_data[i] if i < len(x_data) else 0
+                            y_val = y_data[i] if i < len(y_data) else 0
+                            text = f"{label}\nt = {x_val:,.0f}  val = {y_val:,.2f}"
+                            self._show_hover(text, color)
+                            found = True
+                            break
 
-        self.draw_idle()
+            if not found and self._hover_text.get_visible():
+                self._hover_text.set_visible(False)
+
+            self.draw_idle()
+        except Exception:
+            pass
 
     def _register_hover(self, artist, x_data, y_data, label="", color="#ffffcc"):
         """Register a line/scatter artist for hover detection."""
@@ -149,59 +151,68 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
 
         all_chains = distribution.all_chains()
 
-        if len(all_chains) > 0:
-            counts, bins, patches = self.axes.hist(
-                all_chains, bins=50, alpha=0.7,
-                color='steelblue', edgecolor='black', linewidth=0.5
-            )
-
-            # Register bars for hover (shows chain length range + count + MW)
-            self._register_bar_hover(patches, bins, counts, "Distribution")
-
-            # Mark the peak (mode) with an annotation
-            peak_idx = np.argmax(counts)
-            peak_center = 0.5 * (bins[peak_idx] + bins[peak_idx + 1])
-            peak_count = counts[peak_idx]
-            peak_mw = peak_center * 99.13 + 180.0
-            # Peak annotation -- position below the peak to avoid overlapping the title
-            self.axes.annotate(
-                f'Peak: DP={peak_center:.0f} ({peak_mw:,.0f} g/mol)',
-                xy=(peak_center, peak_count),
-                xytext=(35, -30), textcoords='offset points',
-                bbox=dict(boxstyle='round,pad=0.3', facecolor='#fff3cd',
-                          edgecolor='#ffc107', alpha=0.95),
-                arrowprops=dict(arrowstyle='->', color='#666666'),
-                fontsize=9, fontweight='bold'
-            )
-
-            self.axes.set_xlabel('Chain Length (DP)', fontsize=11)
-            self.axes.set_ylabel('Frequency', fontsize=11)
-            self.axes.set_title(title, fontsize=12, fontweight='bold')
-            self.axes.grid(True, alpha=0.3, linestyle='--')
-
-            # Stats box
-            poly_stats = distribution.polymer_stats()
-            stats_text = (
-                f'Chains: {len(all_chains):,}\n'
-                f'Mean DP: {np.mean(all_chains):.1f}\n'
-                f'Mn: {poly_stats["Mn"]:,.0f} g/mol\n'
-                f'Mw: {poly_stats["Mw"]:,.0f} g/mol\n'
-                f'PDI: {poly_stats["PDI"]:.3f}'
-            )
-            self.axes.text(
-                0.98, 0.98, stats_text,
-                transform=self.axes.transAxes,
-                verticalalignment='top', horizontalalignment='right',
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='white',
-                          edgecolor='#cccccc', alpha=0.9),
-                fontsize=9, fontfamily='monospace'
-            )
-        else:
+        if len(all_chains) == 0:
             self.axes.text(
                 0.5, 0.5, 'No data to display',
                 transform=self.axes.transAxes, ha='center', va='center',
                 fontsize=14, color='#999999'
             )
+            self.draw()
+            return
+
+        # Choose bins carefully for edge cases
+        n_unique = len(np.unique(all_chains))
+        n_bins = min(50, max(1, n_unique))
+
+        counts, bins, patches = self.axes.hist(
+            all_chains, bins=n_bins, alpha=0.7,
+            color='steelblue', edgecolor='black', linewidth=0.5
+        )
+
+        self._register_bar_hover(patches, bins, counts, "Distribution")
+
+        # Stats box -- top-right
+        poly_stats = distribution.polymer_stats()
+        stats_text = (
+            f'Chains: {len(all_chains):,}\n'
+            f'Mean DP: {np.mean(all_chains):.1f}\n'
+            f'Mn: {poly_stats["Mn"]:,.0f} g/mol\n'
+            f'Mw: {poly_stats["Mw"]:,.0f} g/mol\n'
+            f'PDI: {poly_stats["PDI"]:.3f}'
+        )
+        self.axes.text(
+            0.98, 0.95, stats_text,
+            transform=self.axes.transAxes,
+            verticalalignment='top', horizontalalignment='right',
+            bbox=dict(boxstyle='round,pad=0.5', facecolor='white',
+                      edgecolor='#cccccc', alpha=0.9),
+            fontsize=9, fontfamily='monospace',
+            zorder=90,
+        )
+
+        # Highlight the peak bar and show info in bottom-left corner
+        if len(counts) > 0 and np.max(counts) > 0:
+            peak_idx = np.argmax(counts)
+            peak_center = 0.5 * (bins[peak_idx] + bins[peak_idx + 1])
+            peak_mw = peak_center * 99.13 + 180.0
+            patches[peak_idx].set_facecolor('#ffc107')
+            patches[peak_idx].set_edgecolor('#e6a800')
+            patches[peak_idx].set_linewidth(1.5)
+            self.axes.text(
+                0.02, 0.05,
+                f'Most common length: DP {peak_center:.0f}'
+                f'  ({peak_mw:,.0f} g/mol)',
+                transform=self.axes.transAxes,
+                va='bottom', ha='left',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='#fff3cd',
+                          edgecolor='#ffc107', alpha=0.95),
+                fontsize=9, fontweight='bold',
+            )
+
+        self.axes.set_xlabel('Chain Length (DP)', fontsize=11)
+        self.axes.set_ylabel('Frequency', fontsize=11)
+        self.axes.set_title(title, fontsize=12, fontweight='bold')
+        self.axes.grid(True, alpha=0.3, linestyle='--')
 
         self.draw()
 
@@ -214,8 +225,18 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
         """Plot experimental and simulated distributions overlaid."""
         self.clear_plot()
 
+        if len(experimental) == 0:
+            self.axes.text(
+                0.5, 0.5, 'No experimental data to display',
+                transform=self.axes.transAxes, ha='center', va='center',
+                fontsize=14, color='#999999'
+            )
+            self.draw()
+            return
+
         exp_x = np.arange(len(experimental))
-        exp_normalized = experimental / experimental.max()
+        exp_max = experimental.max()
+        exp_normalized = experimental / exp_max if exp_max > 0 else experimental
         line_exp, = self.axes.plot(
             exp_x, exp_normalized, 'o-',
             label='Experimental', color='#e74c3c',
@@ -226,16 +247,20 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
         all_chains = simulated.all_chains()
         if len(all_chains) > 0:
             max_length = min(int(np.max(all_chains)), len(experimental))
-            hist, bins = np.histogram(
-                all_chains, bins=np.arange(0, max_length + 2), density=False
-            )
-            sim_normalized = hist[:len(experimental)] / hist[:len(experimental)].max()
-            line_sim, = self.axes.plot(
-                exp_x, sim_normalized, 's-',
-                label='Simulated', color='#3498db',
-                alpha=0.8, markersize=3, linewidth=1.5
-            )
-            self._register_hover(line_sim, exp_x, sim_normalized, "Simulated", "#aed6f1")
+            if max_length > 0:
+                hist, bins = np.histogram(
+                    all_chains, bins=np.arange(0, max_length + 2), density=False
+                )
+                sim_slice = hist[:len(experimental)]
+                sim_max = sim_slice.max()
+                sim_normalized = sim_slice / sim_max if sim_max > 0 else sim_slice
+                line_sim, = self.axes.plot(
+                    exp_x[:len(sim_normalized)], sim_normalized, 's-',
+                    label='Simulated', color='#3498db',
+                    alpha=0.8, markersize=3, linewidth=1.5
+                )
+                self._register_hover(line_sim, exp_x[:len(sim_normalized)],
+                                     sim_normalized, "Simulated", "#aed6f1")
 
         self.axes.set_xlabel('Chain Length', fontsize=11)
         self.axes.set_ylabel('Normalized Frequency', fontsize=11)
@@ -248,6 +273,15 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
         """Plot optimization cost over generations."""
         self.clear_plot()
 
+        if not cost_history:
+            self.axes.text(
+                0.5, 0.5, 'No convergence data yet',
+                transform=self.axes.transAxes, ha='center', va='center',
+                fontsize=14, color='#999999'
+            )
+            self.draw()
+            return
+
         generations = list(range(1, len(cost_history) + 1))
         line, = self.axes.plot(
             generations, cost_history, 'o-',
@@ -255,7 +289,6 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
         )
         self._register_hover(line, generations, cost_history, "Best Cost", "#abebc6")
 
-        # Fill under curve
         self.axes.fill_between(
             generations, cost_history, alpha=0.1, color='#27ae60'
         )
@@ -265,21 +298,24 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
         self.axes.set_title(title, fontsize=12, fontweight='bold')
         self.axes.grid(True, alpha=0.3, linestyle='--')
 
-        if cost_history:
-            best_cost = min(cost_history)
-            best_gen = cost_history.index(best_cost) + 1
-            self.axes.annotate(
-                f'Best: {best_cost:.4f} (gen {best_gen})',
-                xy=(best_gen, best_cost),
-                xytext=(15, -25), textcoords='offset points',
-                bbox=dict(boxstyle='round', facecolor='#d5f5e3', alpha=0.95,
-                          edgecolor='#27ae60'),
-                arrowprops=dict(arrowstyle='->', color='#27ae60'),
-                fontsize=10, fontweight='bold'
-            )
-            # Mark best point
-            self.axes.plot(best_gen, best_cost, 'v', color='#27ae60',
-                           markersize=10, zorder=5)
+        best_cost = min(cost_history)
+        best_gen = cost_history.index(best_cost) + 1
+
+        # Highlight best point with a marker
+        self.axes.plot(best_gen, best_cost, 'o', color='#1a7a3a',
+                       markersize=9, zorder=5, markeredgecolor='white',
+                       markeredgewidth=1.5)
+
+        # Info text in bottom-right corner (no arrow)
+        self.axes.text(
+            0.98, 0.05,
+            f'Lowest cost: {best_cost:.4f}  (generation {best_gen})',
+            transform=self.axes.transAxes,
+            ha='right', va='bottom',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='#d5f5e3',
+                      alpha=0.95, edgecolor='#27ae60'),
+            fontsize=10, fontweight='bold',
+        )
 
         self.draw()
 
@@ -288,6 +324,15 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
         self.clear_plot()
 
         t = kinetics_data.timesteps
+
+        if len(t) == 0:
+            self.axes.text(
+                0.5, 0.5, 'No kinetics data to display',
+                transform=self.axes.transAxes, ha='center', va='center',
+                fontsize=14, color='#999999'
+            )
+            self.draw()
+            return
 
         # Twin axes: left for Mn/Mw, right for PDI
         ax1 = self.axes
@@ -334,6 +379,16 @@ class InteractivePlotCanvas(FigureCanvasQTAgg):
         self.clear_plot()
 
         t = kinetics_data.timesteps
+
+        if len(t) == 0:
+            self.axes.text(
+                0.5, 0.5, 'No population data to display',
+                transform=self.axes.transAxes, ha='center', va='center',
+                fontsize=14, color='#999999'
+            )
+            self.draw()
+            return
+
         ax1 = self.axes
         ax2 = ax1.twinx()
 
@@ -407,6 +462,15 @@ class PlotWidget(QWidget):
             "plot.png",
             "PNG Image (*.png);;SVG Vector (*.svg);;PDF Document (*.pdf)"
         )
-        if file_path:
+        if not file_path:
+            return
+        try:
             self.canvas.fig.savefig(file_path, dpi=150, bbox_inches='tight')
             self.plot_saved.emit(file_path)
+        except PermissionError:
+            QMessageBox.critical(self, "Save Error",
+                                 f"Permission denied. The file may be open in another application:\n{file_path}")
+        except OSError as e:
+            QMessageBox.critical(self, "Save Error", f"Could not save plot:\n{e}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save plot:\n{e}")

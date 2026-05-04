@@ -28,7 +28,7 @@ def test_simple_optimization_toy_problem():
     ])
 
     # Create objective wrapper that FDDC can use
-    def objective_wrapper(params_array, sigma=None):
+    def objective_wrapper(params_array, sigma=None, eval_seed=None):
         """Convert params to simulation, run, return cost."""
         # Fixed params for simplicity
         params = SimulationParams(

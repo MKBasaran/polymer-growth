@@ -163,6 +163,9 @@ class RunManager:
             "n_workers": config.n_workers,
             "enable_fddc": config.enable_fddc,
             "rank_selection_power": config.rank_selection_power,
+            "sigma_length": config.sigma_length,
+            "sigma_points_to_distribute": config.sigma_points_to_distribute,
+            "sigma_points_per_index": config.sigma_points_per_index,
         }
         return self._save_json("config.json", data)
 
