@@ -369,28 +369,221 @@ def _compute_vampiric_success_prob(
     Formula from thesis:
         p_success = pdr / (l_living^f × l_dead^f)
     where f = min(length × exponent/naked, exponent)
+    """
+    living_exp = np.minimum(l_living * (l_exponent / l_naked), l_exponent)
+    dead_exp = np.minimum(l_dead * (d_exponent / l_naked), d_exponent)
+    denominator = np.power(l_living, living_exp) * np.power(l_dead, dead_exp)
+    return p_dead_react / denominator
 
-    Args:
-        l_living: Living chain lengths being attacked
-        l_dead: Dead (vampiric) chain lengths
-        p_dead_react: Base reaction probability
-        l_exponent: Living exponent
-        d_exponent: Dead exponent
-        l_naked: Naked ratio
+
+@jit(nopython=True)
+def _simulate_core(
+    time_sim: int,
+    n_molecules: int,
+    monomer_pool: float,
+    p_growth: float,
+    p_death: float,
+    p_dead_react: float,
+    l_exponent: float,
+    d_exponent: float,
+    l_naked: float,
+    kill_spawns_new: bool,
+    seed: int
+):
+    """Full simulation loop compiled to machine code via Numba.
+
+    Pre-allocates all arrays at max possible size. Uses index counters
+    instead of dynamic array resizing. Returns raw buffers + counts.
 
     Returns:
-        Array of success probabilities
+        (living_buf, n_living, dead_buf, n_dead, final_monomer_pool)
     """
-    # Living exponent: min(l × le/ln, le)
-    living_exp = np.minimum(l_living * (l_exponent / l_naked), l_exponent)
+    np.random.seed(seed)
 
-    # Dead exponent: min(l × de/ln, de)
-    dead_exp = np.minimum(l_dead * (d_exponent / l_naked), d_exponent)
+    # Pre-allocate at max possible sizes
+    # Living: starts at n_molecules. With kill_spawns_new=True, stays constant.
+    # Without, can only shrink. Max is n_molecules.
+    max_living = n_molecules
+    living = np.ones(max_living, dtype=np.float64)
+    n_living = n_molecules
 
-    # p_success = pdr / (l_living^living_exp × l_dead^dead_exp)
-    denominator = np.power(l_living, living_exp) * np.power(l_dead, dead_exp)
+    # Dead: each timestep can add at most n_living dead chains.
+    # Over all timesteps, bounded by n_molecules (each chain can die once).
+    # With vampiric coupling removing dead chains, practical max is n_molecules.
+    max_dead = n_molecules * 2  # Safety margin for edge cases
+    dead = np.empty(max_dead, dtype=np.float64)
+    n_dead = 0
 
-    return p_dead_react / denominator
+    initial_monomer_pool = monomer_pool
+    current_monomer_pool = monomer_pool
+
+    for t in range(time_sim):
+        if n_living == 0:
+            break
+
+        # Monomer ratio
+        if current_monomer_pool < 0.0:
+            monomer_ratio = 1.0
+        else:
+            monomer_ratio = current_monomer_pool / initial_monomer_pool
+
+        # Random fate for each living chain
+        growth_threshold = p_growth * monomer_ratio
+        death_threshold = (p_growth + p_death) * monomer_ratio
+
+        # Count new dead for this timestep
+        new_dead_count = 0
+
+        if kill_spawns_new:
+            # GROWTH + DEATH with respawn: living array stays same size
+            for i in range(n_living):
+                r = np.random.random()
+                if r < growth_threshold:
+                    # Growth
+                    living[i] += 1.0
+                    if current_monomer_pool >= 0.0:
+                        current_monomer_pool -= 1.0
+                        if current_monomer_pool < 0.0:
+                            current_monomer_pool = 0.0
+                elif r < death_threshold:
+                    # Death: add to dead, respawn as length 1
+                    if n_dead < max_dead:
+                        dead[n_dead] = living[i]
+                        n_dead += 1
+                    living[i] = 1.0
+                    if current_monomer_pool >= 0.0:
+                        current_monomer_pool -= 1.0
+                        if current_monomer_pool < 0.0:
+                            current_monomer_pool = 0.0
+        else:
+            # GROWTH + DEATH without respawn: living shrinks
+            write_idx = 0
+            for i in range(n_living):
+                r = np.random.random()
+                if r < growth_threshold:
+                    # Growth
+                    living[write_idx] = living[i] + 1.0
+                    write_idx += 1
+                    if current_monomer_pool >= 0.0:
+                        current_monomer_pool -= 1.0
+                        if current_monomer_pool < 0.0:
+                            current_monomer_pool = 0.0
+                elif r < death_threshold:
+                    # Death: add to dead, don't keep in living
+                    if n_dead < max_dead:
+                        dead[n_dead] = living[i]
+                        n_dead += 1
+                else:
+                    # Survives unchanged
+                    living[write_idx] = living[i]
+                    write_idx += 1
+            n_living = write_idx
+
+        # VAMPIRIC REACTIONS
+        if n_dead > 0 and n_living > 0:
+            n_total = n_dead + n_living
+
+            # Each dead chain picks a random target
+            # Process attacks: dead chains that picked a living target
+            dead_survived = np.ones(n_dead, dtype=np.int8)
+
+            for d_idx in range(n_dead):
+                target = int(np.random.random() * n_total)
+                if target >= n_dead:
+                    # Attacks a living chain
+                    living_idx = target - n_dead
+                    if living_idx < n_living:
+                        # Compute success probability
+                        l_liv = living[living_idx]
+                        l_ded = dead[d_idx]
+                        f_living = min(l_liv * (l_exponent / l_naked), l_exponent)
+                        f_dead = min(l_ded * (d_exponent / l_naked), d_exponent)
+                        denom = (l_liv ** f_living) * (l_ded ** f_dead)
+                        p_success = p_dead_react / denom if denom > 0.0 else 0.0
+
+                        r_success = np.random.random()
+                        if r_success < p_success:
+                            # Successful coupling: living absorbs dead
+                            living[living_idx] += dead[d_idx]
+                            dead_survived[d_idx] = 0
+
+            # Compact dead array: remove successful couplings
+            write_idx = 0
+            for d_idx in range(n_dead):
+                if dead_survived[d_idx] == 1:
+                    dead[write_idx] = dead[d_idx]
+                    write_idx += 1
+            n_dead = write_idx
+
+    return living, n_living, dead, n_dead, current_monomer_pool
+
+
+def _simulate_fast(params: 'SimulationParams', seed: int) -> 'Distribution':
+    """Fast simulation using Numba JIT core. Drop-in replacement for simulate()."""
+    params.validate()
+
+    living_buf, n_living, dead_buf, n_dead, _ = _simulate_core(
+        time_sim=params.time_sim,
+        n_molecules=params.number_of_molecules,
+        monomer_pool=params.monomer_pool,
+        p_growth=params.p_growth,
+        p_death=params.p_death,
+        p_dead_react=params.p_dead_react,
+        l_exponent=params.l_exponent,
+        d_exponent=params.d_exponent,
+        l_naked=params.l_naked,
+        kill_spawns_new=params.kill_spawns_new,
+        seed=seed,
+    )
+
+    return Distribution(
+        living=living_buf[:n_living].copy(),
+        dead=dead_buf[:n_dead].copy(),
+        coupled=np.array([], dtype=np.float64),
+    )
+
+
+def _simulate_fast_hist(params_tuple, seed: int, target_length: int) -> np.ndarray:
+    """Simulate and return histogram directly. No Distribution object.
+
+    Returns a numpy array of ~target_length ints -- tiny for IPC (~4KB vs 560KB).
+    Used by megabatch workers to minimize pickle overhead.
+    """
+    (time_sim, n_mol, monomer_pool, p_growth, p_death,
+     p_dead_react, l_exp, d_exp, l_naked, kill_spawns) = params_tuple
+
+    living_buf, n_living, dead_buf, n_dead, _ = _simulate_core(
+        time_sim=int(time_sim),
+        n_molecules=int(n_mol),
+        monomer_pool=float(monomer_pool),
+        p_growth=float(p_growth),
+        p_death=float(p_death),
+        p_dead_react=float(p_dead_react),
+        l_exponent=float(l_exp),
+        d_exponent=float(d_exp),
+        l_naked=float(l_naked),
+        kill_spawns_new=bool(round(kill_spawns)),
+        seed=int(seed) % (2**31),
+    )
+
+    living = living_buf[:n_living]
+    dead = dead_buf[:n_dead]
+
+    # Build histogram in-place -- no Distribution object
+    all_chains = np.concatenate([living, dead]) if n_dead > 0 else living
+    if len(all_chains) == 0:
+        return np.zeros(target_length, dtype=np.float64)
+
+    max_len = int(all_chains.max())
+    hist, _ = np.histogram(all_chains, bins=np.arange(max_len + 2))
+    hist = hist.astype(np.float64)
+
+    if len(hist) < target_length:
+        hist = np.concatenate([hist, np.zeros(target_length - len(hist))])
+    elif len(hist) > target_length:
+        hist = hist[:target_length]
+
+    return hist
 
 
 def simulate(

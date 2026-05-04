@@ -14,9 +14,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "program code"))
 
 from polymer_growth.core.simulation import (
-    SimulationParams, Distribution, simulate, MONOMER_MASS, INITIATOR_MASS
+    SimulationParams, Distribution, simulate, _simulate_fast,
+    _simulate_fast_hist, MONOMER_MASS, INITIATOR_MASS
 )
 from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
+from polymer_growth.objective.min_max_v2 import MinMaxV2Config
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
 
 import simulation as thomas_sim
@@ -75,6 +77,13 @@ def make_simulate_new():
     return sim_fn
 
 
+def make_simulate_fast():
+    def sim_fn(params_array, eval_seed):
+        seed = int(eval_seed) % (2**31) if eval_seed is not None else 0
+        return _simulate_fast(_make_sim_params(params_array), seed)
+    return sim_fn
+
+
 def make_objective_thomas(exp_values):
     objective = MinMaxV2ObjectiveFunction(exp_values)
     def wrapper(params_array, sigma=None, eval_seed=None):
@@ -124,15 +133,45 @@ def make_cost_fn(exp_values):
     return cost_fn
 
 
+def make_sim_hist_fn():
+    """Returns function: (params_tuple, seed, hist_length) -> histogram array."""
+    return _simulate_fast_hist
+
+
+def make_cost_from_hist_fn(exp_values):
+    """Returns function: (histogram, sigma) -> cost float.
+    Works on pre-computed histograms, no Distribution needed."""
+    obj = MinMaxV2ObjectiveFunction(exp_values)
+    def cost_from_hist(sim_hist, sigma=None):
+        sigma_arr = sigma if sigma is not None else np.array(obj.config.sigma)
+        sim_max = sim_hist.max()
+        if sim_max == 0:
+            return obj.config.max_cost
+        sim_norm = sim_hist / sim_max
+        trans_sim, shift, peak_pct = obj._align_peaks(sim_norm)
+        cost = obj._compute_partition_cost(trans_sim, sigma_arr)
+        cost *= np.exp(peak_pct / obj.config.transfac)
+        if np.isinf(cost) or cost > obj.config.max_cost:
+            return obj.config.max_cost
+        return float(cost)
+    return cost_from_hist
+
+
 def run_fddc(dataset_key: str, gen_count: int, pop_size: int,
-             impl: str, seed: int = 42, workers: int = None):
+             impl: str, seed: int = 42, workers: int = None,
+             use_fast_sim: bool = False):
     """Run one FDDC optimization. Returns results dict."""
     ref = THOMAS_TABLE_VIII[dataset_key]
     data_path = str(DATA_DIR / ref["file"])
     _, exp_values = load_experimental_data(data_path)
 
     obj_fn = make_objective_new(exp_values) if impl == "new" else make_objective_thomas(exp_values)
-    sim_fn = make_simulate_new() if impl == "new" else make_simulate_thomas()
+    if use_fast_sim and impl == "new":
+        sim_fn = make_simulate_fast()
+    elif impl == "new":
+        sim_fn = make_simulate_new()
+    else:
+        sim_fn = make_simulate_thomas()
     cost_fn = make_cost_fn(exp_values)
 
     import os
@@ -171,6 +210,12 @@ def run_fddc(dataset_key: str, gen_count: int, pop_size: int,
         callback=progress_cb, console_callback=console_cb,
         simulate_fn=sim_fn, cost_fn=cost_fn,
     )
+
+    # Wire megabatch mode (histogram-based IPC) for fast sim
+    if use_fast_sim and impl == "new":
+        optimizer._sim_hist_fn = make_sim_hist_fn()
+        optimizer._cost_from_hist_fn = make_cost_from_hist_fn(exp_values)
+        optimizer._hist_length = len(exp_values)
 
     start = time.time()
     result = optimizer.optimize(seed=seed)
