@@ -18,14 +18,19 @@ from PySide6.QtCore import QThread, Signal, Slot, Qt, QTimer
 from PySide6.QtGui import QFont, QIcon
 
 from polymer_growth.core import simulate, SimulationParams, Distribution
+from polymer_growth.core.parameters import ParameterBounds
 from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
 from polymer_growth.gui.plotting import PlotWidget
 from polymer_growth.gui.tooltips import PARAM_INFO, METRIC_INFO
+from polymer_growth.gui.workers import SimulationWorker, OptimizationWorker
 from polymer_growth.gui.queue_tab import TaskQueueTab
 from polymer_growth.gui.save_dialog import (
     SaveLocationDialog, save_optimization_to_dir,
 )
+
+# Single source of truth for parameter bounds
+DEFAULT_BOUNDS = ParameterBounds()
 
 
 def _info_button(tooltip_html: str) -> QToolButton:
@@ -57,136 +62,6 @@ def _labeled_row(label_text: str, widget, info_key: str = None):
     elif info_key and info_key in METRIC_INFO:
         row.addWidget(_info_button(METRIC_INFO[info_key]["tooltip"]))
     return row
-
-
-class SimulationWorker(QThread):
-    """Worker thread for running simulations without blocking the UI."""
-
-    finished = Signal(object)
-    error = Signal(str)
-
-    def __init__(self, params: SimulationParams, seed: int, track_kinetics: bool = False):
-        super().__init__()
-        self.params = params
-        self.seed = seed
-        self.track_kinetics = track_kinetics
-
-    def run(self):
-        try:
-            rng = np.random.default_rng(self.seed)
-            result = simulate(self.params, rng, track_kinetics=self.track_kinetics)
-            self.finished.emit(result)
-        except Exception as e:
-            self.error.emit(str(e))
-
-
-class OptimizationWorker(QThread):
-    """Worker thread for running FDDC optimization without blocking the UI."""
-
-    progress = Signal(int, float)
-    console_message = Signal(str)
-    finished = Signal(object)
-    error = Signal(str)
-
-    def __init__(self, experimental_data_path: str, config: FDDCConfig,
-                 bounds: np.ndarray, seed: int):
-        super().__init__()
-        self.experimental_data_path = experimental_data_path
-        self.config = config
-        self.bounds = bounds
-        self.seed = seed
-        self._is_cancelled = False
-
-    def cancel(self):
-        self._is_cancelled = True
-
-    def run(self):
-        try:
-            exp_lengths, exp_values = load_experimental_data(self.experimental_data_path)
-            objective = MinMaxV2ObjectiveFunction(exp_values)
-
-            # Set sigma length to match experimental data (non-zero bins)
-            if self.config.sigma_length is None:
-                self.config.sigma_length = int(np.count_nonzero(exp_values))
-
-            def objective_wrapper(params_array, sigma=None, eval_seed=None):
-                if self._is_cancelled:
-                    raise InterruptedError("Optimization cancelled")
-
-                params_array = np.asarray(params_array).flatten()
-                params_list = params_array.tolist()
-
-                params = SimulationParams(
-                    time_sim=int(params_list[0]),
-                    number_of_molecules=int(params_list[1]),
-                    monomer_pool=int(params_list[2]),
-                    p_growth=params_list[3],
-                    p_death=params_list[4],
-                    p_dead_react=params_list[5],
-                    l_exponent=params_list[6],
-                    d_exponent=params_list[7],
-                    l_naked=params_list[8],
-                    kill_spawns_new=bool(round(params_list[9]))
-                )
-
-                rng = np.random.default_rng(
-                    eval_seed if eval_seed is not None else self.seed
-                )
-                dist = simulate(params, rng)
-                return objective.compute_cost(dist, sigma=sigma)
-
-            def _make_params(params_array):
-                params_list = np.asarray(params_array).flatten().tolist()
-                return SimulationParams(
-                    time_sim=int(params_list[0]),
-                    number_of_molecules=int(params_list[1]),
-                    monomer_pool=int(params_list[2]),
-                    p_growth=params_list[3],
-                    p_death=params_list[4],
-                    p_dead_react=params_list[5],
-                    l_exponent=params_list[6],
-                    d_exponent=params_list[7],
-                    l_naked=params_list[8],
-                    kill_spawns_new=bool(round(params_list[9]))
-                )
-
-            def simulate_fn(params_array, eval_seed):
-                if self._is_cancelled:
-                    raise InterruptedError("Optimization cancelled")
-                rng = np.random.default_rng(
-                    eval_seed if eval_seed is not None else self.seed)
-                return simulate(_make_params(params_array), rng)
-
-            def cost_fn(dist, sigma=None):
-                return objective.compute_cost(dist, sigma=sigma)
-
-            def progress_callback(gen, cost):
-                if not self._is_cancelled:
-                    self.progress.emit(gen, cost)
-
-            def console_callback(message):
-                if not self._is_cancelled:
-                    self.console_message.emit(message)
-
-            optimizer = FDDCOptimizer(
-                bounds=self.bounds,
-                objective_function=objective_wrapper,
-                config=self.config,
-                callback=progress_callback,
-                console_callback=console_callback,
-                simulate_fn=simulate_fn,
-                cost_fn=cost_fn,
-            )
-
-            result = optimizer.optimize(seed=self.seed)
-
-            if not self._is_cancelled:
-                self.finished.emit(result)
-
-        except InterruptedError:
-            self.error.emit("Optimization cancelled by user")
-        except Exception as e:
-            self.error.emit(str(e))
 
 
 class SimulationTab(QWidget):
@@ -803,19 +678,7 @@ class OptimizationTab(QWidget):
         self.current_data_path = data_path
         self.cost_history = []
 
-        # Thomas's exact bounds (from 2020 thesis)
-        self.current_bounds = bounds = np.array([
-            [100, 3000],          # time_sim
-            [10000, 120000],      # number_of_molecules
-            [1000000, 5000000],   # monomer_pool
-            [0.1, 0.99],          # p_growth
-            [0.0001, 0.002],      # p_death
-            [0.1, 0.9],           # p_dead_react
-            [0.1, 0.9],           # l_exponent
-            [0.1, 0.9],           # d_exponent
-            [0.1, 1.0],           # l_naked
-            [0, 1]                # kill_spawns_new
-        ])
+        self.current_bounds = bounds = DEFAULT_BOUNDS.as_array()
 
         seed = self.seed_input.value()
         self._opt_start_time = _time.time()

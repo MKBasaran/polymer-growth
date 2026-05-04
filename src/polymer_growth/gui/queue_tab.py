@@ -28,6 +28,7 @@ from PySide6.QtCore import QThread, Signal, Slot, Qt, QTimer
 from PySide6.QtGui import QFont, QColor, QBrush
 
 from polymer_growth.core import simulate, SimulationParams
+from polymer_growth.core.parameters import ParameterBounds
 from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
 from polymer_growth.gui.plotting import PlotWidget
@@ -210,12 +211,7 @@ class QueueWorker(QThread):
             if not self._current_task_cancelled:
                 self.task_console.emit(task.task_id, message)
 
-        # Thomas's exact bounds (from 2020 thesis)
-        bounds = np.array([
-            [100, 3000], [10000, 120000], [1000000, 5000000],
-            [0.1, 0.99], [0.0001, 0.002], [0.1, 0.9],
-            [0.1, 0.9], [0.1, 0.9], [0.1, 1.0], [0, 1]
-        ])
+        bounds = ParameterBounds().as_array()
         optimizer = FDDCOptimizer(
             bounds=bounds,
             objective_function=objective_wrapper,

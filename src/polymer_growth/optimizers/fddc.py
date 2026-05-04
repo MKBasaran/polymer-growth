@@ -31,11 +31,15 @@ import multiprocessing as mp
 from multiprocessing.pool import Pool
 import time
 
-# Force fork start method for true parallelism (workers inherit globals)
-try:
-    mp.set_start_method('fork', force=True)
-except RuntimeError:
-    pass  # Already set
+# Use fork on Unix for true parallelism (workers inherit globals).
+# On Windows or frozen apps (PyInstaller), fall back to spawn.
+import sys as _sys
+_is_frozen = getattr(_sys, 'frozen', False)
+if not _is_frozen and _sys.platform != 'win32':
+    try:
+        mp.set_start_method('fork', force=True)
+    except RuntimeError:
+        pass  # Already set
 
 # Module-level function references for multiprocessing workers.
 # Workers forked from the main process inherit these via fork().
