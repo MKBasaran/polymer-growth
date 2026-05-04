@@ -13,8 +13,11 @@ Based on algorithm from previous research:
 
 import os
 
-# Prevent numpy/BLAS from spawning internal threads that compete with our
-# process-level parallelism. Must be set before numpy is imported.
+# Restrict NumPy/Numba internal threading to 1 thread per process.
+# When using multiprocessing Pool, each worker should use a single thread
+# to avoid oversubscription on the host machine. This is defensive best
+# practice for any numpy + multiprocessing workload, even when the current
+# codebase does not call BLAS routines directly.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
@@ -58,13 +61,6 @@ def _worker_sim(args):
     """Simulate only, return distribution. For batched reproduce_pop1."""
     params, eval_seed = args
     return _worker_simulate(params, eval_seed)
-
-
-def _worker_sim_and_cost(args):
-    """Simulate + compute cost in worker. Returns float, not Distribution."""
-    params, sigma, eval_seed = args
-    dist = _worker_simulate(params, eval_seed)
-    return _worker_cost(dist, sigma)
 
 
 _worker_sim_hist_fn = None  # _simulate_fast_hist function ref
@@ -197,6 +193,12 @@ class FDDCOptimizer:
                          and evaluates cost with multiple sigmas (matching Thomas).
             cost_fn: Optional function(distribution, sigma) -> float cost.
         """
+        # Validate inputs
+        if not isinstance(bounds, np.ndarray) or bounds.ndim != 2 or bounds.shape[1] != 2:
+            raise ValueError("bounds must be a numpy array with shape (N, 2)")
+        if not callable(objective_function):
+            raise TypeError("objective_function must be callable")
+
         self.bounds = bounds
         self.n_params = bounds.shape[0]
         self.objective = objective_function
@@ -210,6 +212,12 @@ class FDDCOptimizer:
         self._hist_length = 0  # Set during init from experimental data
 
         # Validate config
+        if self.config.population_size < 2:
+            raise ValueError("population_size must be at least 2")
+        if self.config.max_generations < 1:
+            raise ValueError("max_generations must be at least 1")
+        if self.config.memory_size < 1:
+            raise ValueError("memory_size must be at least 1")
         if self.config.population_size % self.config.memory_size != 0:
             raise ValueError("population_size must be divisible by memory_size")
 
@@ -286,47 +294,45 @@ class FDDCOptimizer:
         # Initial fitness evaluation
         self._evaluate_initial_fitness()
 
-        # Main evolution loop
-        for gen in range(self.config.max_generations):
-            self._log(f"\n=== Generation {gen + 1}/{self.config.max_generations} ===")
+        try:
+            # Main evolution loop
+            for gen in range(self.config.max_generations):
+                self._log(f"\n=== Generation {gen + 1}/{self.config.max_generations} ===")
 
-            if self._sim_hist_fn and self._cost_from_hist_fn:
-                # FASTEST PATH: histogram-based IPC, 1 pool.map per gen
-                self._generation_megabatch(gen)
-                best_cost = self._megabatch_best_cost
-            elif self.simulate_fn and self.cost_fn:
-                # FAST PATH: Distribution-based, 1 pool.map per gen
-                if gen > 0:
-                    self._run_encounters()
-                rank_pop1, rank_pop2 = self._compute_ranks()
-                self._reproduce_batch(rank_pop1, rank_pop2)
-                rank_pop1, _ = self._compute_ranks()
-                best_params = rank_pop1[-1]
-                eval_seed = int(self.rng.integers(0, 2**63))
-                dist = self.simulate_fn(best_params, eval_seed)
-                best_cost = self.cost_fn(dist, None)
-            else:
-                if gen > 0:
-                    self._run_encounters()
-                rank_pop1, rank_pop2 = self._compute_ranks()
-                self._reproduce_batch(rank_pop1, rank_pop2)
-                rank_pop1, _ = self._compute_ranks()
-                best_params = rank_pop1[-1]
-                eval_seed = int(self.rng.integers(0, 2**63))
-                best_cost = self.objective(best_params, eval_seed=eval_seed)
+                if self._sim_hist_fn and self._cost_from_hist_fn:
+                    self._generation_megabatch(gen)
+                    best_cost = self._megabatch_best_cost
+                elif self.simulate_fn and self.cost_fn:
+                    if gen > 0:
+                        self._run_encounters()
+                    rank_pop1, rank_pop2 = self._compute_ranks()
+                    self._reproduce_batch(rank_pop1, rank_pop2)
+                    rank_pop1, _ = self._compute_ranks()
+                    best_params = rank_pop1[-1]
+                    eval_seed = int(self.rng.integers(0, 2**63))
+                    dist = self.simulate_fn(best_params, eval_seed)
+                    best_cost = self.cost_fn(dist, None)
+                else:
+                    if gen > 0:
+                        self._run_encounters()
+                    rank_pop1, rank_pop2 = self._compute_ranks()
+                    self._reproduce_batch(rank_pop1, rank_pop2)
+                    rank_pop1, _ = self._compute_ranks()
+                    best_params = rank_pop1[-1]
+                    eval_seed = int(self.rng.integers(0, 2**63))
+                    best_cost = self.objective(best_params, eval_seed=eval_seed)
 
-            self.cost_history.append(best_cost)
-            self._log(f"Best cost: {best_cost:.6f}")
+                self.cost_history.append(best_cost)
+                self._log(f"Best cost: {best_cost:.6f}")
 
-            # Callback
-            if self.callback:
-                self.callback(gen + 1, best_cost)
-
-        # Shutdown process pool
-        if self._pool:
-            self._pool.terminate()
-            self._pool.join()
-            self._pool = None
+                if self.callback:
+                    self.callback(gen + 1, best_cost)
+        finally:
+            # Always clean up process pool, even on exception
+            if self._pool:
+                self._pool.terminate()
+                self._pool.join()
+                self._pool = None
 
         # Final result - use best cost from history (not re-evaluation)
         best_cost_in_history = min(self.cost_history)

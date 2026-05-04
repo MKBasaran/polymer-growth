@@ -14,7 +14,7 @@ Key equations:
 """
 
 from dataclasses import dataclass, asdict, field
-from typing import Tuple, Optional, List, Dict
+from typing import Tuple, Optional, List, Dict, Union
 import numpy as np
 from numba import jit
 
@@ -591,7 +591,7 @@ def simulate(
     rng: np.random.Generator,
     track_kinetics: bool = False,
     kinetics_interval: int = 1
-) -> "Distribution | SimulationResult":
+) -> Union["Distribution", "SimulationResult"]:
     """
     Run agent-based polymer growth simulation.
 

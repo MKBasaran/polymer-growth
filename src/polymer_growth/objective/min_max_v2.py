@@ -71,6 +71,13 @@ class MinMaxV2ObjectiveFunction:
             experimental_values: Experimental distribution values (1D array)
             config: Configuration (uses defaults if None)
         """
+        if not isinstance(experimental_values, np.ndarray):
+            raise TypeError("experimental_values must be a numpy array")
+        if experimental_values.ndim != 1:
+            raise ValueError("experimental_values must be 1-dimensional")
+        if len(experimental_values) == 0:
+            raise ValueError("experimental_values must not be empty")
+
         self.exp_values = experimental_values
         self.config = config if config is not None else MinMaxV2Config()
 
