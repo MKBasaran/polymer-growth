@@ -15,7 +15,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "program code"))
 
 from polymer_growth.core.simulation import (
     SimulationParams, Distribution, simulate, _simulate_fast,
-    _simulate_fast_hist, MONOMER_MASS, INITIATOR_MASS
+    _simulate_fast_hist, _simulate_raw, MONOMER_MASS, INITIATOR_MASS
 )
 from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
 from polymer_growth.objective.min_max_v2 import MinMaxV2Config
@@ -64,16 +64,16 @@ def _make_sim_params(params_array):
 def make_objective_new(exp_values):
     objective = MinMaxV2ObjectiveFunction(exp_values)
     def wrapper(params_array, sigma=None, eval_seed=None):
-        rng = np.random.default_rng(eval_seed)
-        dist = simulate(_make_sim_params(params_array), rng)
+        seed = int(eval_seed) % (2**31) if eval_seed is not None else 0
+        dist = _simulate_raw(np.asarray(params_array).flatten(), seed)
         return objective.compute_cost(dist, sigma=sigma)
     return wrapper
 
 
 def make_simulate_new():
     def sim_fn(params_array, eval_seed):
-        rng = np.random.default_rng(eval_seed)
-        return simulate(_make_sim_params(params_array), rng)
+        seed = int(eval_seed) % (2**31) if eval_seed is not None else 0
+        return _simulate_raw(np.asarray(params_array).flatten(), seed)
     return sim_fn
 
 

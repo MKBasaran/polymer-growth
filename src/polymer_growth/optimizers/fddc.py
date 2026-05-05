@@ -646,16 +646,11 @@ class FDDCOptimizer:
         selected_pop1 = self._rank_select(rank_pop1, n_enc)
         selected_pop2 = self._rank_select(rank_pop2, n_enc)
 
-        # Resolve indices before parallel execution
-        pop1_indices = []
-        pop2_indices = []
-        for i in range(n_enc):
-            pop1_idx = next(idx for idx, ind in enumerate(self.pop1)
-                           if np.array_equal(ind, selected_pop1[i]))
-            pop2_idx = next(idx for idx, ind in enumerate(self.pop2)
-                           if np.array_equal(ind, selected_pop2[i]))
-            pop1_indices.append(pop1_idx)
-            pop2_indices.append(pop2_idx)
+        # Resolve indices using object identity (O(1) lookup vs O(N) array_equal)
+        pop1_id_map = {id(ind): idx for idx, ind in enumerate(self.pop1)}
+        pop2_id_map = {id(ind): idx for idx, ind in enumerate(self.pop2)}
+        pop1_indices = [pop1_id_map[id(selected_pop1[i])] for i in range(n_enc)]
+        pop2_indices = [pop2_id_map[id(selected_pop2[i])] for i in range(n_enc)]
 
         # Parallel evaluation of all encounters
         eval_seeds = [int(self.rng.integers(0, 2**63)) for _ in range(n_enc)]

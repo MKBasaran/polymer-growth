@@ -543,6 +543,34 @@ def _simulate_fast(params: 'SimulationParams', seed: int) -> 'Distribution':
     )
 
 
+def _simulate_raw(params_array, seed: int) -> 'Distribution':
+    """Fastest path: raw array in, Distribution out. No dataclass, no validate.
+
+    Eliminates per-call overhead of SimulationParams construction + validation.
+    Used in the worker hot path (33 calls/gen x 42 gens = 1386 calls).
+    """
+    p = params_array
+    living_buf, n_living, dead_buf, n_dead, _ = _simulate_core(
+        time_sim=int(p[0]),
+        n_molecules=int(p[1]),
+        monomer_pool=float(p[2]),
+        p_growth=float(p[3]),
+        p_death=float(p[4]),
+        p_dead_react=float(p[5]),
+        l_exponent=float(p[6]),
+        d_exponent=float(p[7]),
+        l_naked=float(p[8]),
+        kill_spawns_new=bool(round(p[9])),
+        seed=int(seed) % (2**31),
+    )
+
+    return Distribution(
+        living=living_buf[:n_living],  # No .copy() -- buffer is fresh per call
+        dead=dead_buf[:n_dead],
+        coupled=np.array([], dtype=np.float64),
+    )
+
+
 def _simulate_fast_hist(params_tuple, seed: int, target_length: int) -> np.ndarray:
     """Simulate and return histogram directly. No Distribution object.
 
