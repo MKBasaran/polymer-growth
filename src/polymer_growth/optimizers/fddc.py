@@ -25,7 +25,7 @@ os.environ.setdefault("NUMBA_NUM_THREADS", "1")
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 
 import numpy as np
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional, Tuple, List
 import multiprocessing as mp
 from multiprocessing.pool import Pool
@@ -59,12 +59,6 @@ def _worker_eval_indexed(args):
     pop1_idx, pop2_idx, params, sigma, eval_seed = args
     cost = _worker_objective(params, sigma=sigma, eval_seed=eval_seed)
     return (pop1_idx, pop2_idx, cost)
-
-
-def _worker_sim(args):
-    """Simulate only, return distribution. For batched reproduce_pop1."""
-    params, eval_seed = args
-    return _worker_simulate(params, eval_seed)
 
 
 _worker_sim_hist_fn = None  # _simulate_fast_hist function ref
@@ -804,117 +798,6 @@ class FDDCOptimizer:
         if np.mean(child_fitness) > np.mean(self.fitness_memory_pop2[worst_idx]):
             self.pop2[worst_idx] = child
             self.fitness_memory_pop2[worst_idx] = child_fitness
-
-    def _reproduce_batch(self, rank_pop1: List[np.ndarray],
-                         rank_pop2: List[np.ndarray]):
-        """Batched reproduction: all children generated, then evaluated in parallel.
-
-        Pop1 children: simulate ALL in one parallel batch (was serial).
-        Pop2 children: evaluate ALL in one parallel batch (was 2 separate batches).
-        This eliminates the serial bottleneck in reproduce_pop1.
-        """
-        n_children = self.config.n_children
-        mem_size = self.config.memory_size
-        pop_size = self.config.population_size
-
-        # --- Pop1: generate all children, batch simulate ---
-        pop1_children = []
-        pop1_sigmas = []  # list of sigma-lists per child
-        for _ in range(n_children):
-            parents = self._rank_select(rank_pop1, 2)
-            child = self._mutate(self._crossover(parents[0], parents[1]))
-            pop2_indices = self.rng.integers(0, pop_size, size=mem_size)
-            sigmas = [self.pop2[i] for i in pop2_indices]
-            pop1_children.append(child)
-            pop1_sigmas.append(sigmas)
-
-        if self.simulate_fn and self.cost_fn:
-            # Batch simulate all pop1 children in parallel
-            eval_seeds = [int(self.rng.integers(0, 2**63))
-                          for _ in range(n_children)]
-            if self._use_parallel and n_children > 1:
-                sim_tasks = [(child, seed) for child, seed in
-                             zip(pop1_children, eval_seeds)]
-                dists = self._parallel_map(_worker_sim, sim_tasks)
-            else:
-                dists = [self.simulate_fn(c, s)
-                         for c, s in zip(pop1_children, eval_seeds)]
-
-            # Cost eval is cheap -- do it in main process
-            for i, (child, dist, sigmas) in enumerate(
-                    zip(pop1_children, dists, pop1_sigmas)):
-                child_fitness = [-self.cost_fn(dist, s) for s in sigmas]
-                worst_idx = np.argmin(
-                    [np.mean(m) for m in self.fitness_memory_pop1])
-                if np.mean(child_fitness) > np.mean(
-                        self.fitness_memory_pop1[worst_idx]):
-                    self.pop1[worst_idx] = child
-                    self.fitness_memory_pop1[worst_idx] = child_fitness
-
-            # Cache last child's distribution for best-cost eval
-            self._last_best_dist = dists[-1] if dists else None
-        else:
-            # Fallback: original sequential behavior
-            for i in range(n_children):
-                child = pop1_children[i]
-                sigmas = pop1_sigmas[i]
-                eval_seeds = [int(self.rng.integers(0, 2**63))
-                              for _ in range(len(sigmas))]
-                if self._use_parallel and mem_size > 1:
-                    tasks = [(child, s, es)
-                             for s, es in zip(sigmas, eval_seeds)]
-                    child_fitness = [-c for c in self._parallel_map(
-                        _worker_eval, tasks)]
-                else:
-                    child_fitness = [
-                        -self.objective(child, sigma=s, eval_seed=es)
-                        for s, es in zip(sigmas, eval_seeds)]
-                worst_idx = np.argmin(
-                    [np.mean(m) for m in self.fitness_memory_pop1])
-                if np.mean(child_fitness) > np.mean(
-                        self.fitness_memory_pop1[worst_idx]):
-                    self.pop1[worst_idx] = child
-                    self.fitness_memory_pop1[worst_idx] = child_fitness
-            self._last_best_dist = None
-
-        # --- Pop2: generate all children, batch evaluate ---
-        all_pop2_tasks = []
-        pop2_children = []
-        pop2_opponents_info = []  # (child_idx, opponent_list, eval_seeds)
-
-        for c_idx in range(n_children):
-            parents = self._rank_select(rank_pop2, 2)
-            child = self._crossover_sigma(parents[0], parents[1])
-            pop2_children.append(child)
-
-            pop1_indices = self.rng.integers(0, pop_size, size=mem_size)
-            opponents = [self.pop1[i] for i in pop1_indices]
-            seeds = [int(self.rng.integers(0, 2**63)) for _ in range(mem_size)]
-            pop2_opponents_info.append((opponents, seeds))
-
-            for opp, es in zip(opponents, seeds):
-                all_pop2_tasks.append((c_idx, opp, child, es))
-
-        if self._use_parallel and len(all_pop2_tasks) > 1:
-            worker_tasks = [(t[1], t[2], t[3]) for t in all_pop2_tasks]
-            all_costs = self._parallel_map(_worker_eval, worker_tasks)
-        else:
-            all_costs = [self.objective(t[1], sigma=t[2], eval_seed=t[3])
-                         for t in all_pop2_tasks]
-
-        # Distribute costs back to children
-        cost_idx = 0
-        for c_idx in range(n_children):
-            child = pop2_children[c_idx]
-            child_fitness = all_costs[cost_idx:cost_idx + mem_size]
-            cost_idx += mem_size
-
-            worst_idx = np.argmin(
-                [np.mean(m) for m in self.fitness_memory_pop2])
-            if np.mean(child_fitness) > np.mean(
-                    self.fitness_memory_pop2[worst_idx]):
-                self.pop2[worst_idx] = child
-                self.fitness_memory_pop2[worst_idx] = child_fitness
 
     def _crossover(self, parent1: np.ndarray, parent2: np.ndarray) -> np.ndarray:
         """Two-point crossover for parameter vectors.

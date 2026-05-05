@@ -14,7 +14,7 @@ Key equations:
 """
 
 from dataclasses import dataclass, asdict, field
-from typing import Tuple, Optional, List, Dict, Union
+from typing import Tuple, Optional, Union
 import numpy as np
 from numba import jit
 
@@ -699,11 +699,7 @@ def simulate(
             # Death removes chain → delete from living
             living = living[~will_die]
 
-        # Add newly dead chains to dead pool
-        if len(new_dead) > 0:
-            dead = np.concatenate([dead, new_dead])
-
-        # VAMPIRIC REACTIONS
+        # VAMPIRIC REACTIONS (before adding new_dead, matching Thomas)
         if len(dead) > 0 and len(living) > 0:
             # Each dead chain picks a random target (living or dead)
             n_targets = len(dead) + len(living)
@@ -741,6 +737,10 @@ def simulate(
                     still_dead_mask = np.ones(len(dead), dtype=bool)
                     still_dead_mask[successful_dead_idx] = False
                     dead = dead[still_dead_mask]
+
+        # Add newly dead chains AFTER vampiric reactions (matches Thomas)
+        if len(new_dead) > 0:
+            dead = np.concatenate([dead, new_dead])
 
         # Track kinetics at interval
         if track_kinetics and (t % kinetics_interval == 0):
