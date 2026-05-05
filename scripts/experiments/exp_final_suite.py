@@ -135,7 +135,7 @@ def run_ours(dataset, seed, workers):
     ref = TABLE_VIII[dataset]
     result = run_fddc(
         dataset_key=dataset, gen_count=ref["gens"], pop_size=POP_SIZE,
-        impl="new", seed=seed, workers=workers, use_fast_sim=True,
+        impl="new", seed=seed, workers=workers,
     )
     result["impl"] = "ours"
     result["workers"] = workers
