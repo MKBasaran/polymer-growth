@@ -1,0 +1,28 @@
+{
+  "test_a": {
+    "label": "Test A: fixed published parameters",
+    "ours_mean": 0.8381206069762508,
+    "ours_std": 0.00961394406866137,
+    "thomas_mean": 1.1094840680559477,
+    "thomas_std": 0.012085483856325404,
+    "ratio_thomas_over_ours": 1.3237761472763625,
+    "n": 30
+  },
+  "test_b": {
+    "label": "Test B: varied parameters from BOUNDS",
+    "ours_mean": 0.45156574601617955,
+    "ours_std": 0.2786636672182802,
+    "thomas_mean": 0.7241737179458141,
+    "thomas_std": 0.47455836369702453,
+    "ratio_thomas_over_ours": 1.6036949753931669,
+    "n": 30
+  },
+  "test_c": {
+    "label": "Test C: full FDDC workers=1 pop=20 gens=3",
+    "ours_total": 49.21970016695559,
+    "thomas_total": 74.29722104221582,
+    "ratio_thomas_over_ours": 1.509501699323565,
+    "gens": 3,
+    "pop": 20
+  }
+}

@@ -1,0 +1,443 @@
+{
+  "generated": "2026-05-03T11:32:06.309996",
+  "thomas_code": {
+    "file_count": 25,
+    "total_lines": 6532,
+    "code_lines": 4484,
+    "blank_lines": 1012,
+    "comment_lines": 1036,
+    "avg_lines_per_file": 261.3,
+    "files": [
+      {
+        "file": "program code/GA_base.py",
+        "total": 648,
+        "code": 387,
+        "blank": 88,
+        "comment": 173
+      },
+      {
+        "file": "program code/GA_base_NN.py",
+        "total": 615,
+        "code": 459,
+        "blank": 93,
+        "comment": 63
+      },
+      {
+        "file": "program code/GA_base_NN_2.py",
+        "total": 614,
+        "code": 456,
+        "blank": 93,
+        "comment": 65
+      },
+      {
+        "file": "program code/GA_paretto.py",
+        "total": 274,
+        "code": 211,
+        "blank": 50,
+        "comment": 13
+      },
+      {
+        "file": "program code/NN.py",
+        "total": 95,
+        "code": 56,
+        "blank": 10,
+        "comment": 29
+      },
+      {
+        "file": "program code/acquisitionFunction.py",
+        "total": 123,
+        "code": 90,
+        "blank": 31,
+        "comment": 2
+      },
+      {
+        "file": "program code/bayesianOptimization.py",
+        "total": 131,
+        "code": 93,
+        "blank": 28,
+        "comment": 10
+      },
+      {
+        "file": "program code/co_evolution.py",
+        "total": 496,
+        "code": 378,
+        "blank": 80,
+        "comment": 38
+      },
+      {
+        "file": "program code/cross_island_breeding_GA.py",
+        "total": 195,
+        "code": 146,
+        "blank": 40,
+        "comment": 9
+      },
+      {
+        "file": "program code/data_generator.py",
+        "total": 70,
+        "code": 44,
+        "blank": 16,
+        "comment": 10
+      },
+      {
+        "file": "program code/distributionComparison.py",
+        "total": 507,
+        "code": 353,
+        "blank": 110,
+        "comment": 44
+      },
+      {
+        "file": "program code/evolutionaryAlgorithm.py",
+        "total": 210,
+        "code": 117,
+        "blank": 35,
+        "comment": 58
+      },
+      {
+        "file": "program code/fddc.py",
+        "total": 514,
+        "code": 389,
+        "blank": 74,
+        "comment": 51
+      },
+      {
+        "file": "program code/helper.py",
+        "total": 54,
+        "code": 31,
+        "blank": 12,
+        "comment": 11
+      },
+      {
+        "file": "program code/hillClimbing.py",
+        "total": 52,
+        "code": 47,
+        "blank": 4,
+        "comment": 1
+      },
+      {
+        "file": "program code/island_GA.py",
+        "total": 317,
+        "code": 231,
+        "blank": 49,
+        "comment": 37
+      },
+      {
+        "file": "program code/matlab_simulation.py",
+        "total": 260,
+        "code": 0,
+        "blank": 0,
+        "comment": 260
+      },
+      {
+        "file": "program code/runOptimization.py",
+        "total": 38,
+        "code": 18,
+        "blank": 9,
+        "comment": 11
+      },
+      {
+        "file": "program code/show_population.py",
+        "total": 78,
+        "code": 55,
+        "blank": 17,
+        "comment": 6
+      },
+      {
+        "file": "program code/simulation.py",
+        "total": 226,
+        "code": 102,
+        "blank": 41,
+        "comment": 83
+      },
+      {
+        "file": "program code/test screenshot.py",
+        "total": 4,
+        "code": 3,
+        "blank": 1,
+        "comment": 0
+      },
+      {
+        "file": "program code/tester.py",
+        "total": 148,
+        "code": 105,
+        "blank": 16,
+        "comment": 27
+      },
+      {
+        "file": "program code/txt_to_excel.py",
+        "total": 32,
+        "code": 24,
+        "blank": 8,
+        "comment": 0
+      },
+      {
+        "file": "program code/ultimate EA.py",
+        "total": 33,
+        "code": 26,
+        "blank": 7,
+        "comment": 0
+      },
+      {
+        "file": "program code/user_interface.py",
+        "total": 798,
+        "code": 663,
+        "blank": 100,
+        "comment": 35
+      }
+    ]
+  },
+  "our_code": {
+    "file_count": 18,
+    "total_lines": 5162,
+    "code_lines": 4061,
+    "blank_lines": 838,
+    "comment_lines": 263,
+    "avg_lines_per_file": 286.8,
+    "files": [
+      {
+        "file": "src/polymer_growth/__init__.py",
+        "total": 39,
+        "code": 33,
+        "blank": 6,
+        "comment": 0
+      },
+      {
+        "file": "src/polymer_growth/core/__init__.py",
+        "total": 32,
+        "code": 30,
+        "blank": 2,
+        "comment": 0
+      },
+      {
+        "file": "src/polymer_growth/core/parameters.py",
+        "total": 83,
+        "code": 69,
+        "blank": 14,
+        "comment": 0
+      },
+      {
+        "file": "src/polymer_growth/core/run_manager.py",
+        "total": 323,
+        "code": 261,
+        "blank": 55,
+        "comment": 7
+      },
+      {
+        "file": "src/polymer_growth/core/simulation.py",
+        "total": 593,
+        "code": 444,
+        "blank": 112,
+        "comment": 37
+      },
+      {
+        "file": "src/polymer_growth/objective/__init__.py",
+        "total": 6,
+        "code": 4,
+        "blank": 2,
+        "comment": 0
+      },
+      {
+        "file": "src/polymer_growth/objective/loaders.py",
+        "total": 106,
+        "code": 68,
+        "blank": 25,
+        "comment": 13
+      },
+      {
+        "file": "src/polymer_growth/objective/min_max_v2.py",
+        "total": 249,
+        "code": 174,
+        "blank": 51,
+        "comment": 24
+      },
+      {
+        "file": "src/polymer_growth/cli/__init__.py",
+        "total": 5,
+        "code": 3,
+        "blank": 2,
+        "comment": 0
+      },
+      {
+        "file": "src/polymer_growth/cli/main.py",
+        "total": 219,
+        "code": 167,
+        "blank": 36,
+        "comment": 16
+      },
+      {
+        "file": "src/polymer_growth/optimizers/__init__.py",
+        "total": 5,
+        "code": 3,
+        "blank": 2,
+        "comment": 0
+      },
+      {
+        "file": "src/polymer_growth/optimizers/fddc.py",
+        "total": 633,
+        "code": 458,
+        "blank": 111,
+        "comment": 64
+      },
+      {
+        "file": "src/polymer_growth/gui/__init__.py",
+        "total": 5,
+        "code": 3,
+        "blank": 2,
+        "comment": 0
+      },
+      {
+        "file": "src/polymer_growth/gui/app.py",
+        "total": 1081,
+        "code": 869,
+        "blank": 168,
+        "comment": 44
+      },
+      {
+        "file": "src/polymer_growth/gui/plotting.py",
+        "total": 476,
+        "code": 383,
+        "blank": 76,
+        "comment": 17
+      },
+      {
+        "file": "src/polymer_growth/gui/queue_tab.py",
+        "total": 907,
+        "code": 749,
+        "blank": 134,
+        "comment": 24
+      },
+      {
+        "file": "src/polymer_growth/gui/save_dialog.py",
+        "total": 181,
+        "code": 131,
+        "blank": 34,
+        "comment": 16
+      },
+      {
+        "file": "src/polymer_growth/gui/tooltips.py",
+        "total": 219,
+        "code": 212,
+        "blank": 6,
+        "comment": 1
+      }
+    ]
+  },
+  "tests": {
+    "file_count": 4,
+    "total_lines": 525,
+    "code_lines": 384,
+    "blank_lines": 100,
+    "comment_lines": 41,
+    "avg_lines_per_file": 131.2,
+    "files": [
+      {
+        "file": "tests/__init__.py",
+        "total": 1,
+        "code": 1,
+        "blank": 0,
+        "comment": 0
+      },
+      {
+        "file": "tests/test_integration.py",
+        "total": 116,
+        "code": 74,
+        "blank": 23,
+        "comment": 19
+      },
+      {
+        "file": "tests/test_objective.py",
+        "total": 185,
+        "code": 128,
+        "blank": 42,
+        "comment": 15
+      },
+      {
+        "file": "tests/test_simulation.py",
+        "total": 223,
+        "code": 181,
+        "blank": 35,
+        "comment": 7
+      }
+    ],
+    "test_files": 3,
+    "test_functions": 29,
+    "test_names": [
+      "test_preprocess_empty_distribution",
+      "test_preprocess_combines_all_pools",
+      "test_preprocess_pads_to_target_length",
+      "test_preprocess_truncates_to_target_length",
+      "test_initialization",
+      "test_zero_experimental_raises",
+      "test_perfect_match_low_cost",
+      "test_misaligned_peaks_higher_cost",
+      "test_empty_simulation_max_cost",
+      "test_custom_sigma_weights",
+      "test_peak_alignment",
+      "test_cost_bounded",
+      "test_different_distributions_different_costs",
+      "test_simple_optimization_toy_problem",
+      "test_sigma_integration",
+      "test_valid_params",
+      "test_invalid_p_growth",
+      "test_to_from_dict",
+      "test_determinism",
+      "test_different_seeds_different_output",
+      "test_chain_count_with_spawn",
+      "test_chain_count_without_spawn",
+      "test_growth_increases_lengths",
+      "test_infinite_monomer",
+      "test_distribution_stats",
+      "test_histogram",
+      "test_zero_death_no_dead_chains",
+      "test_high_death_creates_dead_pool",
+      "test_very_short_simulation"
+    ]
+  },
+  "dependencies": {
+    "core_count": 9,
+    "core_names": [
+      "numpy",
+      "pandas",
+      "matplotlib",
+      "scipy",
+      "numba",
+      "pyyaml",
+      "click",
+      "tqdm",
+      "openpyxl"
+    ]
+  },
+  "complexity": {
+    "thomas": {
+      "available": false
+    },
+    "ours": {
+      "available": false
+    }
+  },
+  "qualitative": {
+    "modularity": {
+      "thomas": "Flat directory, 8 Python files, no package structure",
+      "ours": "pip-installable package with core/, objective/, optimizers/, gui/, cli/ subpackages"
+    },
+    "testability": {
+      "thomas": "No tests, no test infrastructure",
+      "ours": "29 tests across 3 files (pytest)"
+    },
+    "installability": {
+      "thomas": "Manual: clone repo, install deps by hand, run from directory",
+      "ours": "pip install -e . (pyproject.toml with declared dependencies)"
+    },
+    "reproducibility": {
+      "thomas": "No deterministic seeding, results vary between runs",
+      "ours": "eval_seed parameter ensures bit-identical results for same seed"
+    },
+    "parallelization": {
+      "thomas": "Hardcoded Pool(6), no BLAS thread suppression",
+      "ours": "Configurable n_workers, BLAS suppression, fork-based ProcessPool"
+    },
+    "gui": {
+      "thomas": "Tkinter, coupled to optimization logic",
+      "ours": "PySide6, 3-tab interface, threaded workers, decoupled from logic"
+    }
+  }
+}
