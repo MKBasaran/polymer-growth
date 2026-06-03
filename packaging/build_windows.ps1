@@ -2,7 +2,8 @@
 #
 # Prereqs:
 #   - Windows
-#   - Python 3.10 installed and on PATH (matches macOS dev version)
+#   - Python 3.11 installed (py -3.11 must work). 3.10.0 ships bytecode
+#     that PyInstaller 6.20 cannot parse, so the build path is pinned to 3.11.
 #   - Inno Setup 6+ installed (https://jrsoftware.org/isdl.php) — only required
 #     if you want the .exe installer. Without it you still get a portable folder
 #     bundle in dist\Polymer Growth Simulator\.
@@ -22,8 +23,15 @@ Set-Location $RepoRoot
 $Version = "0.1.0"
 
 if (-Not (Test-Path ".venv")) {
-    Write-Host "Creating venv (Python 3.10)..."
-    python -m venv .venv
+    Write-Host "Creating venv (Python 3.11)..."
+    py -3.11 -m venv .venv
+}
+
+# Reject any non-3.11 venv. Modulegraph fails on 3.10.0 bytecode.
+$VenvVersion = & .\.venv\Scripts\python.exe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+if ($VenvVersion -ne "3.11") {
+    Write-Error ".venv uses Python $VenvVersion, but the build path requires 3.11. Delete .venv and re-run."
+    exit 1
 }
 
 $Py = ".\.venv\Scripts\python.exe"

@@ -2,8 +2,9 @@
 # Build the macOS .app and wrap it into a .dmg.
 #
 # Prereqs:
-#   - macOS (tested on Sequoia / arm64)
-#   - Python 3.10 venv at .venv with the project installed via pip install -e ".[gui,dev]"
+#   - macOS (tested on Sequoia)
+#   - Python 3.11 venv at .venv with the project installed via pip install -e ".[gui,dev]"
+#     (3.10.0 ships bytecode PyInstaller 6.20 cannot parse — use 3.11)
 #
 # Output:
 #   dist/Polymer Growth Simulator.app
@@ -22,7 +23,15 @@ VERSION="0.1.0"
 DMG_NAME="PolymerGrowthSimulator-${VERSION}.dmg"
 
 if [[ ! -d ".venv" ]]; then
-    echo "ERROR: .venv not found. Run 'python3.10 -m venv .venv && .venv/bin/pip install -e \".[gui,dev]\"' first." >&2
+    echo "ERROR: .venv not found. Run 'python3.11 -m venv .venv && .venv/bin/pip install -e \".[gui,dev]\"' first." >&2
+    exit 1
+fi
+
+# Reject 3.10 explicitly — PyInstaller's modulegraph chokes on 3.10.0 bytecode.
+VENV_PY_VERSION=$(.venv/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+if [[ "$VENV_PY_VERSION" != "3.11" ]]; then
+    echo "ERROR: .venv uses Python ${VENV_PY_VERSION}, but the build path requires 3.11." >&2
+    echo "       Delete .venv and run: python3.11 -m venv .venv && .venv/bin/pip install -e \".[gui,dev]\"" >&2
     exit 1
 fi
 
