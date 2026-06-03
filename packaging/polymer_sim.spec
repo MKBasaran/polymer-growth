@@ -15,7 +15,10 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 APP_NAME = "Polymer Growth Simulator"
-ENTRY = "packaging/polymer_sim_app.py"
+# Spec lives in packaging/; entry script is in the same directory. PyInstaller
+# resolves script paths relative to the spec file, so the bare filename is
+# correct here regardless of cwd.
+ENTRY = "polymer_sim_app.py"
 IS_MAC = sys.platform == "darwin"
 IS_WIN = sys.platform == "win32"
 
@@ -44,7 +47,10 @@ block_cipher = None
 
 a = Analysis(
     [ENTRY],
-    pathex=["src"],
+    # pathex resolves relative to the spec file (packaging/). The src/
+    # layout lives one level up. Editable pip install also makes the
+    # package importable, but listing the path explicitly is robust.
+    pathex=[str(Path(SPEC).parent.parent / "src")],
     binaries=[],
     datas=datas,
     hiddenimports=hidden,
