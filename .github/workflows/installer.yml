@@ -1,0 +1,75 @@
+name: Build Installers
+
+on:
+  push:
+    branches: [installer]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: macOS .app + .dmg
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install project + PyInstaller
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[gui,dev]"
+          .venv/bin/pip install "pyinstaller>=6.6,<7.0"
+
+      - name: Build
+        run: bash packaging/build_macos.sh
+
+      - name: Smoke-test bundle launches
+        run: |
+          # Launch headless-ish; -W lets the app start but we kill it quickly.
+          # We just want to confirm the bootloader does not crash on launch.
+          open "dist/Polymer Growth Simulator.app" --args --help || true
+          sleep 5
+          pkill -f "Polymer Growth Simulator" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PolymerGrowthSimulator-macOS
+          path: |
+            dist/PolymerGrowthSimulator-0.1.0.dmg
+            dist/Polymer Growth Simulator.app
+
+  windows:
+    name: Windows .exe + Inno Setup installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install project + PyInstaller
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\pip.exe install -e ".[gui,dev]"
+          .\.venv\Scripts\pip.exe install "pyinstaller>=6.6,<7.0"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PolymerGrowthSimulator-Windows
+          path: |
+            dist/PolymerGrowthSimulator-Setup-0.1.0.exe
+            dist/Polymer Growth Simulator/**

@@ -27,8 +27,13 @@ from multiprocessing.pool import Pool
 import time
 
 import sys as _sys
-_is_frozen = getattr(_sys, 'frozen', False)
-if not _is_frozen and _sys.platform != 'win32':
+# Force 'fork' on macOS/Linux so worker subprocesses inherit the module-level
+# closures (_worker_objective/_worker_simulate/_worker_cost). With the macOS
+# default 'spawn', frozen PyInstaller bundles re-import this module per worker
+# and those globals stay None -> "NoneType object is not callable" when the
+# Optimization or Queue tab runs. Done at import time, before any Qt event
+# loop, which is safe.
+if _sys.platform != 'win32':
     try:
         mp.set_start_method('fork', force=True)
     except RuntimeError:
