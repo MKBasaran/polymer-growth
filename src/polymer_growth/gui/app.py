@@ -560,7 +560,9 @@ class OptimizationTab(QWidget):
         self.seed_noise_input.setSingleStep(0.01)
         self.seed_noise_input.setDecimals(2)
         self.seed_noise_input.setValue(0.05)
+        self.seed_noise_input.setSuffix(" × bound width")
         self.seed_noise_input.setEnabled(False)
+        self.seed_noise_input.setToolTip(SEED_INIT_INFO)
         self.seed_from_sim_input.toggled.connect(self.seed_noise_input.setEnabled)
 
         config_layout.addLayout(_labeled_row("Population Size:", self.population_input))
@@ -572,8 +574,7 @@ class OptimizationTab(QWidget):
         seed_row.addWidget(self.seed_from_sim_input, 1)
         seed_row.addWidget(_info_button(SEED_INIT_INFO))
         config_layout.addLayout(seed_row)
-        config_layout.addLayout(_labeled_row(
-            "Noise scale (frac of bound width):", self.seed_noise_input))
+        config_layout.addLayout(_labeled_row("Noise scale:", self.seed_noise_input))
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
 

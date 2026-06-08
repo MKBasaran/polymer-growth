@@ -367,8 +367,9 @@ class TaskQueueTab(QWidget):
         self.opt_seed_noise_input.setSingleStep(0.01)
         self.opt_seed_noise_input.setDecimals(2)
         self.opt_seed_noise_input.setValue(0.05)
+        self.opt_seed_noise_input.setSuffix(" × width")
         self.opt_seed_noise_input.setEnabled(False)
-        self.opt_seed_noise_input.setFixedWidth(70)
+        self.opt_seed_noise_input.setFixedWidth(110)
         self.opt_seed_from_sim_input.toggled.connect(
             self.opt_seed_noise_input.setEnabled)
 
