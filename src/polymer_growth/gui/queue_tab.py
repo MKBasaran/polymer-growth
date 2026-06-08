@@ -26,10 +26,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Slot, Qt, QTimer
 from PySide6.QtGui import QFont, QColor, QBrush
 
-from polymer_growth.core import simulate, SimulationParams
 from polymer_growth.core.parameters import ParameterBounds
-from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
+from polymer_growth.objective import load_experimental_data
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
+from polymer_growth.gui.worker_callables import (
+    WorkerObjective, WorkerSimulate, WorkerCost,
+)
 from polymer_growth.gui.plotting import PlotWidget
 from polymer_growth.gui.save_dialog import (
     SaveLocationDialog, save_optimization_to_dir, sanitize_filename,
@@ -148,7 +150,6 @@ class QueueWorker(QThread):
         seed = p.get("seed", 42)
 
         exp_lengths, exp_values = load_experimental_data(data_path)
-        objective = MinMaxV2ObjectiveFunction(exp_values)
 
         seed_vector = p.get("seed_vector")
         if seed_vector is not None:
@@ -165,53 +166,23 @@ class QueueWorker(QThread):
 
         max_gen = config.max_generations
 
+        # Picklable callables for the worker pool (spawn-safe on Windows).
+        base_objective = WorkerObjective(exp_values, seed)
+        base_simulate = WorkerSimulate(seed)
+        base_cost = WorkerCost(exp_values)
+
+        # In-process callables additionally honour per-task cancellation.
         def objective_wrapper(params_array, sigma=None, eval_seed=None):
             if self._current_task_cancelled:
                 raise InterruptedError("Task cancelled")
-
-            params_list = np.asarray(params_array).flatten().tolist()
-            sim_params = SimulationParams(
-                time_sim=int(params_list[0]),
-                number_of_molecules=int(params_list[1]),
-                monomer_pool=int(params_list[2]),
-                p_growth=params_list[3],
-                p_death=params_list[4],
-                p_dead_react=params_list[5],
-                l_exponent=params_list[6],
-                d_exponent=params_list[7],
-                l_naked=params_list[8],
-                kill_spawns_new=bool(round(params_list[9]))
-            )
-            rng = np.random.default_rng(
-                eval_seed if eval_seed is not None else seed
-            )
-            dist = simulate(sim_params, rng)
-            return objective.compute_cost(dist, sigma=sigma)
-
-        def _make_params(params_array):
-            params_list = np.asarray(params_array).flatten().tolist()
-            return SimulationParams(
-                time_sim=int(params_list[0]),
-                number_of_molecules=int(params_list[1]),
-                monomer_pool=int(params_list[2]),
-                p_growth=params_list[3],
-                p_death=params_list[4],
-                p_dead_react=params_list[5],
-                l_exponent=params_list[6],
-                d_exponent=params_list[7],
-                l_naked=params_list[8],
-                kill_spawns_new=bool(round(params_list[9]))
-            )
+            return base_objective(params_array, sigma=sigma, eval_seed=eval_seed)
 
         def simulate_fn(params_array, eval_seed):
             if self._current_task_cancelled:
                 raise InterruptedError("Task cancelled")
-            rng = np.random.default_rng(
-                eval_seed if eval_seed is not None else seed)
-            return simulate(_make_params(params_array), rng)
+            return base_simulate(params_array, eval_seed)
 
-        def cost_fn(dist, sigma=None):
-            return objective.compute_cost(dist, sigma=sigma)
+        cost_fn = base_cost
 
         def progress_callback(gen, cost):
             if not self._current_task_cancelled:
@@ -233,6 +204,9 @@ class QueueWorker(QThread):
             console_callback=console_callback,
             simulate_fn=simulate_fn,
             cost_fn=cost_fn,
+            worker_objective=base_objective,
+            worker_simulate=base_simulate,
+            worker_cost=base_cost,
         )
 
         start_time = time.time()

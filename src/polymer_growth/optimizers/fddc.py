@@ -44,6 +44,21 @@ _worker_simulate = None
 _worker_cost = None
 
 
+def _init_worker_globals(objective, simulate_fn, cost_fn):
+    """Pool initializer: populate the worker-process globals.
+
+    Runs once inside each worker before it processes any task. Under 'fork'
+    the globals would already be inherited, but 'spawn' (Windows) re-imports
+    this module fresh, leaving them None -- so set them explicitly here from
+    the (picklable) callables the pool was given. This makes the parallel path
+    work identically on both start methods.
+    """
+    global _worker_objective, _worker_simulate, _worker_cost
+    _worker_objective = objective
+    _worker_simulate = simulate_fn
+    _worker_cost = cost_fn
+
+
 def _worker_eval(args):
     params, sigma, eval_seed = args
     return _worker_objective(params, sigma=sigma, eval_seed=eval_seed)
@@ -129,7 +144,10 @@ class FDDCOptimizer:
         callback: Optional[Callable[[int, float], None]] = None,
         console_callback: Optional[Callable[[str], None]] = None,
         simulate_fn: Optional[Callable] = None,
-        cost_fn: Optional[Callable] = None
+        cost_fn: Optional[Callable] = None,
+        worker_objective: Optional[Callable] = None,
+        worker_simulate: Optional[Callable] = None,
+        worker_cost: Optional[Callable] = None
     ):
         """Construct an optimiser.
 
@@ -162,6 +180,12 @@ class FDDCOptimizer:
         self.console_callback = console_callback
         self.simulate_fn = simulate_fn
         self.cost_fn = cost_fn
+        # Picklable callables for worker processes. When omitted, the optimizer
+        # falls back to the in-process callables above -- fine under 'fork' but
+        # not under 'spawn', where the GUI supplies picklable variants.
+        self.worker_objective = worker_objective
+        self.worker_simulate = worker_simulate
+        self.worker_cost = worker_cost
 
         if self.config.population_size < 2:
             raise ValueError("population_size must be at least 2")
@@ -211,16 +235,26 @@ class FDDCOptimizer:
         """
         self.rng = np.random.default_rng(seed)
 
-        global _worker_objective, _worker_simulate, _worker_cost
-        _worker_objective = self.objective
-        _worker_simulate = self.simulate_fn
-        _worker_cost = self.cost_fn
+        # Callables for the worker pool. Prefer the picklable variants (required
+        # by 'spawn' on Windows); fall back to the in-process callables, which
+        # are inherited fine under 'fork' on macOS/Linux.
+        pool_objective = self.worker_objective or self.objective
+        pool_simulate = self.worker_simulate or self.simulate_fn
+        pool_cost = self.worker_cost or self.cost_fn
 
         n_workers = self.config.n_workers if self.config.n_workers else None
         self._use_parallel = n_workers is None or n_workers != 1
 
         if self._use_parallel:
-            self._pool = Pool(processes=n_workers)
+            # Populate the worker globals inside each worker via the initializer
+            # rather than relying on fork inheritance, so the parallel path also
+            # works under 'spawn'. The parent process never reads these globals
+            # (its own evaluations go through self.objective/simulate_fn/cost_fn).
+            self._pool = Pool(
+                processes=n_workers,
+                initializer=_init_worker_globals,
+                initargs=(pool_objective, pool_simulate, pool_cost),
+            )
         else:
             self._pool = None
 

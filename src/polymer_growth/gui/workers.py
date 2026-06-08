@@ -11,8 +11,11 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 
 from polymer_growth.core import simulate, SimulationParams
-from polymer_growth.objective import MinMaxV2ObjectiveFunction, load_experimental_data
+from polymer_growth.objective import load_experimental_data
 from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
+from polymer_growth.gui.worker_callables import (
+    WorkerObjective, WorkerSimulate, WorkerCost,
+)
 
 
 class SimulationWorker(QThread):
@@ -75,57 +78,29 @@ class OptimizationWorker(QThread):
         try:
             exp_lengths, exp_values = load_experimental_data(
                 self.experimental_data_path)
-            objective = MinMaxV2ObjectiveFunction(exp_values)
 
             if self.config.sigma_length is None:
                 self.config.sigma_length = int(np.count_nonzero(exp_values))
 
+            # Picklable callables for the worker pool (spawn-safe on Windows).
+            base_objective = WorkerObjective(exp_values, self.seed)
+            base_simulate = WorkerSimulate(self.seed)
+            base_cost = WorkerCost(exp_values)
+
+            # In-process callables additionally honour cancellation; the
+            # optimizer raises out of these when the user cancels mid-run.
             def objective_wrapper(params_array, sigma=None, eval_seed=None):
                 if self.is_cancelled:
                     raise InterruptedError("Optimization cancelled")
-                params_array = np.asarray(params_array).flatten()
-                params_list = params_array.tolist()
-                params = SimulationParams(
-                    time_sim=int(params_list[0]),
-                    number_of_molecules=int(params_list[1]),
-                    monomer_pool=int(params_list[2]),
-                    p_growth=params_list[3],
-                    p_death=params_list[4],
-                    p_dead_react=params_list[5],
-                    l_exponent=params_list[6],
-                    d_exponent=params_list[7],
-                    l_naked=params_list[8],
-                    kill_spawns_new=bool(round(params_list[9]))
-                )
-                rng = np.random.default_rng(
-                    eval_seed if eval_seed is not None else self.seed)
-                dist = simulate(params, rng)
-                return objective.compute_cost(dist, sigma=sigma)
-
-            def _make_params(params_array):
-                params_list = np.asarray(params_array).flatten().tolist()
-                return SimulationParams(
-                    time_sim=int(params_list[0]),
-                    number_of_molecules=int(params_list[1]),
-                    monomer_pool=int(params_list[2]),
-                    p_growth=params_list[3],
-                    p_death=params_list[4],
-                    p_dead_react=params_list[5],
-                    l_exponent=params_list[6],
-                    d_exponent=params_list[7],
-                    l_naked=params_list[8],
-                    kill_spawns_new=bool(round(params_list[9]))
-                )
+                return base_objective(params_array, sigma=sigma,
+                                      eval_seed=eval_seed)
 
             def simulate_fn(params_array, eval_seed):
                 if self.is_cancelled:
                     raise InterruptedError("Optimization cancelled")
-                rng = np.random.default_rng(
-                    eval_seed if eval_seed is not None else self.seed)
-                return simulate(_make_params(params_array), rng)
+                return base_simulate(params_array, eval_seed)
 
-            def cost_fn(dist, sigma=None):
-                return objective.compute_cost(dist, sigma=sigma)
+            cost_fn = base_cost
 
             def progress_callback(gen, cost):
                 if not self.is_cancelled:
@@ -143,6 +118,9 @@ class OptimizationWorker(QThread):
                 console_callback=console_callback,
                 simulate_fn=simulate_fn,
                 cost_fn=cost_fn,
+                worker_objective=base_objective,
+                worker_simulate=base_simulate,
+                worker_cost=base_cost,
             )
 
             result = optimizer.optimize(seed=self.seed)
