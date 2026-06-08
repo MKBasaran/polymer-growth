@@ -89,6 +89,8 @@ class FDDCConfig:
     sigma_points_to_distribute: Optional[int] = None
     sigma_points_per_index: int = 4
     rank_selection_power: float = 1.5
+    seed_vector: Optional[np.ndarray] = None
+    seed_noise_scale: float = 0.05
 
 
 @dataclass
@@ -285,17 +287,47 @@ class FDDCOptimizer:
             convergence_generation=best_generation + 1
         )
 
+    # Dimension indices tied to ParameterBounds.as_array() ordering:
+    # 0=time_sim, 1=number_of_molecules, 2=monomer_pool (integer-typed),
+    # ..., 9=kill_spawns_new (boolean switch).
+    _INTEGER_DIMS = (0, 1, 2)
+
     def _initialize_populations(self):
         pop_size = self.config.population_size
+        lower = self.bounds[:, 0]
+        upper = self.bounds[:, 1]
 
         self.pop1 = []
-        for _ in range(pop_size):
-            individual = self.rng.uniform(
-                self.bounds[:, 0],
-                self.bounds[:, 1],
-                size=self.n_params
-            )
-            self.pop1.append(individual)
+        if self.config.seed_vector is None:
+            # Default behaviour: uniform-random sample of the bounds.
+            # Must stay bit-identical at a fixed seed (regression-tested).
+            for _ in range(pop_size):
+                individual = self.rng.uniform(
+                    lower,
+                    upper,
+                    size=self.n_params
+                )
+                self.pop1.append(individual)
+        else:
+            # Seeded behaviour: every pop1 individual is the seed vector plus
+            # per-dimension Gaussian noise whose std scales with bound width,
+            # because the parameters span ~5 orders of magnitude. The boolean
+            # dimension is a discrete switch, so it is never noised -- every
+            # individual carries the seed's value there.
+            seed_vec = np.asarray(self.config.seed_vector, dtype=float).flatten()
+            if seed_vec.shape[0] != self.n_params:
+                raise ValueError(
+                    f"seed_vector length {seed_vec.shape[0]} does not match "
+                    f"n_params {self.n_params}")
+            sigma = self.config.seed_noise_scale * (upper - lower)
+            bool_index = self.n_params - 1  # kill_spawns_new
+            for _ in range(pop_size):
+                noise = self.rng.normal(0.0, sigma, size=self.n_params)
+                individual = np.clip(seed_vec + noise, lower, upper)
+                for idx in self._INTEGER_DIMS:
+                    individual[idx] = float(round(individual[idx]))
+                individual[bool_index] = seed_vec[bool_index]
+                self.pop1.append(individual)
 
         _ = self.objective(self.pop1[0],
                            eval_seed=int(self.rng.integers(0, 2**63)))
