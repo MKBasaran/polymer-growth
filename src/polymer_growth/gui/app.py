@@ -31,6 +31,14 @@ from polymer_growth.gui.save_dialog import (
 # Single source of truth for parameter bounds
 DEFAULT_BOUNDS = ParameterBounds()
 
+# Explanation shown on the seed-initialisation info button.
+SEED_INIT_INFO = (
+    "Replaces FDDC's uniform-random pop1 with the Simulation tab's current "
+    "parameter values plus per-dimension Gaussian noise. Noise std equals "
+    "(scale) &times; (upper &minus; lower) per parameter. 0 = all individuals "
+    "identical to the seed (no diversity; GA cannot explore)."
+)
+
 
 def _info_button(tooltip_html: str) -> QToolButton:
     """Create a small info button with a rich-text tooltip."""
@@ -542,10 +550,30 @@ class OptimizationTab(QWidget):
             self.workers_input.addItem(label, i)
         self.workers_input.setCurrentIndex(0)
 
+        # Seed pop1 from the Simulation tab's current parameter values
+        self.seed_from_sim_input = QCheckBox(
+            "Seed initial population from Simulation tab values")
+        self.seed_from_sim_input.setChecked(False)
+
+        self.seed_noise_input = QDoubleSpinBox()
+        self.seed_noise_input.setRange(0.00, 0.50)
+        self.seed_noise_input.setSingleStep(0.01)
+        self.seed_noise_input.setDecimals(2)
+        self.seed_noise_input.setValue(0.05)
+        self.seed_noise_input.setEnabled(False)
+        self.seed_from_sim_input.toggled.connect(self.seed_noise_input.setEnabled)
+
         config_layout.addLayout(_labeled_row("Population Size:", self.population_input))
         config_layout.addLayout(_labeled_row("Max Generations:", self.generations_input))
         config_layout.addLayout(_labeled_row("Random Seed:", self.seed_input, "seed"))
         config_layout.addLayout(_labeled_row("CPU Workers:", self.workers_input))
+
+        seed_row = QHBoxLayout()
+        seed_row.addWidget(self.seed_from_sim_input, 1)
+        seed_row.addWidget(_info_button(SEED_INIT_INFO))
+        config_layout.addLayout(seed_row)
+        config_layout.addLayout(_labeled_row(
+            "Noise scale (frac of bound width):", self.seed_noise_input))
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
 
@@ -617,6 +645,27 @@ class OptimizationTab(QWidget):
         if file_path:
             self.data_path_input.setText(file_path)
 
+    def _build_seed_vector_from_sim_tab(self) -> np.ndarray:
+        """Snapshot the Simulation tab's current parameter values as a
+        10-element float vector in ParameterBounds.as_array() order.
+
+        Booleans become 1.0/0.0 and integers become floats so the GA's
+        array maths is uniform.
+        """
+        sim = self.window().sim_tab
+        return np.array([
+            float(sim.time_input.value()),
+            float(sim.molecules_input.value()),
+            float(sim.monomer_input.value()),
+            float(sim.p_growth_input.value()),
+            float(sim.p_death_input.value()),
+            float(sim.p_dead_react_input.value()),
+            float(sim.l_exponent_input.value()),
+            float(sim.d_exponent_input.value()),
+            float(sim.l_naked_input.value()),
+            1.0 if sim.kill_spawns_input.isChecked() else 0.0,
+        ], dtype=float)
+
     @Slot()
     def start_optimization(self):
         if self.worker and self.worker.isRunning():
@@ -679,6 +728,20 @@ class OptimizationTab(QWidget):
 
         self.current_bounds = bounds = DEFAULT_BOUNDS.as_array()
 
+        # Optionally seed pop1 from the Simulation tab's current values.
+        seed_vector = None
+        seed_noise_scale = self.seed_noise_input.value()
+        if self.seed_from_sim_input.isChecked():
+            raw_vector = self._build_seed_vector_from_sim_tab()
+            seed_vector = np.clip(raw_vector, bounds[:, 0], bounds[:, 1])
+            if not np.array_equal(raw_vector, seed_vector):
+                QMessageBox.information(
+                    self, "Seed Clipped",
+                    "Some Simulation tab values fell outside the optimizer's "
+                    "parameter bounds and were clipped before seeding. "
+                    "Optimization will proceed with the clipped seed."
+                )
+
         seed = self.seed_input.value()
         self._opt_start_time = _time.time()
         self.start_btn.setEnabled(False)
@@ -696,7 +759,9 @@ class OptimizationTab(QWidget):
         if self._status_bar:
             self._status_bar.showMessage("Optimization running...")
 
-        self.worker = OptimizationWorker(data_path, config, bounds, seed)
+        self.worker = OptimizationWorker(
+            data_path, config, bounds, seed,
+            seed_vector=seed_vector, seed_noise_scale=seed_noise_scale)
         self.worker.progress.connect(self.on_progress_update)
         self.worker.console_message.connect(self.on_console_message)
         self.worker.finished.connect(self.on_optimization_finished)

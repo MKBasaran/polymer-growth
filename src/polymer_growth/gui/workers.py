@@ -5,6 +5,8 @@ These QThread subclasses run compute-intensive work without blocking the GUI.
 
 import threading
 
+from typing import Optional
+
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
@@ -45,10 +47,16 @@ class OptimizationWorker(QThread):
     error = Signal(str)
 
     def __init__(self, experimental_data_path: str, config: FDDCConfig,
-                 bounds: np.ndarray, seed: int):
+                 bounds: np.ndarray, seed: int,
+                 seed_vector: Optional[np.ndarray] = None,
+                 seed_noise_scale: float = 0.05):
         super().__init__()
         self.experimental_data_path = experimental_data_path
         self.config = config
+        # Seed FDDC's initial pop1 from caller-supplied parameter values when
+        # provided; default None preserves the uniform-random init.
+        self.config.seed_vector = seed_vector
+        self.config.seed_noise_scale = seed_noise_scale
         self.bounds = bounds
         self.seed = seed
         self._cancel_lock = threading.Lock()

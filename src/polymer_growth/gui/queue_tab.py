@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QSpinBox,
     QLineEdit, QFileDialog, QTextEdit, QMessageBox, QAbstractItemView,
-    QSplitter, QDialog
+    QSplitter, QDialog, QCheckBox, QDoubleSpinBox
 )
 from PySide6.QtCore import QThread, Signal, Slot, Qt, QTimer
 from PySide6.QtGui import QFont, QColor, QBrush
@@ -33,6 +33,14 @@ from polymer_growth.optimizers import FDDCOptimizer, FDDCConfig
 from polymer_growth.gui.plotting import PlotWidget
 from polymer_growth.gui.save_dialog import (
     SaveLocationDialog, save_optimization_to_dir, sanitize_filename,
+)
+
+
+SEED_INIT_INFO = (
+    "Replaces FDDC's uniform-random pop1 with the Simulation tab's current "
+    "parameter values plus per-dimension Gaussian noise, snapshotted at the "
+    "moment this task is added to the queue. Noise std equals (scale) x "
+    "(upper - lower) per parameter. 0 = all individuals identical to the seed."
 )
 
 
@@ -142,11 +150,17 @@ class QueueWorker(QThread):
         exp_lengths, exp_values = load_experimental_data(data_path)
         objective = MinMaxV2ObjectiveFunction(exp_values)
 
+        seed_vector = p.get("seed_vector")
+        if seed_vector is not None:
+            seed_vector = np.asarray(seed_vector, dtype=float)
+
         config = FDDCConfig(
             population_size=p.get("population_size", 50),
             max_generations=p.get("max_generations", 20),
             n_workers=p.get("n_workers", None),
             sigma_length=int(np.count_nonzero(exp_values)),
+            seed_vector=seed_vector,
+            seed_noise_scale=p.get("seed_noise_scale", 0.05),
         )
 
         max_gen = config.max_generations
@@ -341,6 +355,30 @@ class TaskQueueTab(QWidget):
         row2.addStretch()
         add_layout.addLayout(row2)
 
+        # Row 2b: seed pop1 from the Simulation tab's current values
+        row2b = QHBoxLayout()
+        self.opt_seed_from_sim_input = QCheckBox(
+            "Seed initial population from Simulation tab values")
+        self.opt_seed_from_sim_input.setChecked(False)
+        self.opt_seed_from_sim_input.setToolTip(SEED_INIT_INFO)
+
+        self.opt_seed_noise_input = QDoubleSpinBox()
+        self.opt_seed_noise_input.setRange(0.00, 0.50)
+        self.opt_seed_noise_input.setSingleStep(0.01)
+        self.opt_seed_noise_input.setDecimals(2)
+        self.opt_seed_noise_input.setValue(0.05)
+        self.opt_seed_noise_input.setEnabled(False)
+        self.opt_seed_noise_input.setFixedWidth(70)
+        self.opt_seed_from_sim_input.toggled.connect(
+            self.opt_seed_noise_input.setEnabled)
+
+        row2b.addWidget(self.opt_seed_from_sim_input)
+        row2b.addSpacing(12)
+        row2b.addWidget(QLabel("Noise scale:"))
+        row2b.addWidget(self.opt_seed_noise_input)
+        row2b.addStretch()
+        add_layout.addLayout(row2b)
+
         # Row 3: Add button + batch tools
         row3 = QHBoxLayout()
         self.add_btn = QPushButton("Add to Queue")
@@ -474,6 +512,24 @@ class TaskQueueTab(QWidget):
             n += 1
         return f"{base} ({n})"
 
+    def _build_seed_vector_from_sim_tab(self) -> np.ndarray:
+        """Snapshot the Simulation tab's current parameter values as a
+        10-element float vector in ParameterBounds.as_array() order.
+        """
+        sim = self.window().sim_tab
+        return np.array([
+            float(sim.time_input.value()),
+            float(sim.molecules_input.value()),
+            float(sim.monomer_input.value()),
+            float(sim.p_growth_input.value()),
+            float(sim.p_death_input.value()),
+            float(sim.p_dead_react_input.value()),
+            float(sim.l_exponent_input.value()),
+            float(sim.d_exponent_input.value()),
+            float(sim.l_naked_input.value()),
+            1.0 if sim.kill_spawns_input.isChecked() else 0.0,
+        ], dtype=float)
+
     def _browse_data(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Experimental Data",
@@ -499,6 +555,15 @@ class TaskQueueTab(QWidget):
             "seed": self.opt_seed_input.value(),
             "n_workers": self.opt_workers_input.currentData(),
         }
+
+        # Snapshot the Simulation tab's current values NOW (queue-time), not at
+        # run-time, so each queued task carries the seed it was created with.
+        if self.opt_seed_from_sim_input.isChecked():
+            bounds = ParameterBounds().as_array()
+            raw_vector = self._build_seed_vector_from_sim_tab()
+            clipped = np.clip(raw_vector, bounds[:, 0], bounds[:, 1])
+            params["seed_vector"] = clipped.tolist()
+            params["seed_noise_scale"] = self.opt_seed_noise_input.value()
 
         task = QueueTask(
             task_id=_new_task_id(),
