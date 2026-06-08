@@ -2,7 +2,7 @@ name: Build Installers
 
 on:
   push:
-    branches: [installer]
+    branches: [installer, pass-over]
   workflow_dispatch:
 
 jobs:
